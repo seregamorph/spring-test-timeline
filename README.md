@@ -1,5 +1,5 @@
 # spring-test-timeline
-Sprint Test and Context Timeline ⏱️
+Spring Test and Context Timeline ⏱️
 
 ## How to use
 
