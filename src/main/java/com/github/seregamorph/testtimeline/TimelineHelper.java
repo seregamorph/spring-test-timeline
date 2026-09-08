@@ -80,6 +80,7 @@ class TimelineHelper {
             contextStates.computeIfAbsent(contextId,
                 $ -> new ContextState(System.nanoTime(), currentWorkerThreadId.get(), currentTestClass.getName()));
         }
+        log.info("Initializing context for test class {}", currentTestClass.getName());
     }
 
     void addEvent(String contextId, ContextEventType eventType) {
@@ -100,6 +101,7 @@ class TimelineHelper {
         if (eventType == ContextEventType.DESTROYING) {
             metricsCollector.decActiveContexts();
         }
+        log.info("{} context for test class {}", eventType.printableName(), currentTestClass.getName());
     }
 
     @NonNull

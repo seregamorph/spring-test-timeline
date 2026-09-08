@@ -1,5 +1,7 @@
 package com.github.seregamorph.testtimeline;
 
+import java.util.Locale;
+
 /**
  * @author Sergey Chernov
  */
@@ -40,5 +42,10 @@ public enum ContextEventType {
     /**
      * On bean destroy
      */
-    DESTROYING
+    DESTROYING;
+
+    public String printableName() {
+        String name = name();
+        return name.charAt(0) + name.substring(1).toLowerCase(Locale.ROOT);
+    }
 }
