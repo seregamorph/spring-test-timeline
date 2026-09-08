@@ -1,9 +1,10 @@
 package com.github.seregamorph.testtimeline;
 
-import java.io.File;
-import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.io.File;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * @author Sergey Chernov
@@ -80,12 +81,12 @@ public abstract class EventTrackerSupport {
     }
     */
 
-    static void contextCreated(String contextId) {
+    static void contextInitializing(String contextId) {
         if (timelineHelper == null) {
             logger.warn("timelineHelper not initialized");
             return;
         }
-        timelineHelper.contextCreated(contextId);
+        timelineHelper.contextInitializing(contextId);
     }
 
     static void trackEvent(String contextId, ContextEventType eventType) {

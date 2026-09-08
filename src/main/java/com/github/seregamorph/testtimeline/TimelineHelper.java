@@ -1,15 +1,12 @@
 package com.github.seregamorph.testtimeline;
 
-import java.math.BigDecimal;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.lang.NonNull;
+
+import java.math.BigDecimal;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * @author Sergey Chernov
@@ -73,7 +70,10 @@ class TimelineHelper {
         metricsCollector.start();
     }
 
-    void contextCreated(String contextId) {
+    /**
+     * Called early when {@link org.springframework.test.context.ContextCustomizer}s are executed
+     */
+    void contextInitializing(String contextId) {
         metricsCollector.incActiveContexts();
         Class<?> currentTestClass = getCurrentTestClass();
         synchronized (contextStates) {
