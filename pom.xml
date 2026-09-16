@@ -6,8 +6,9 @@
 
     <groupId>com.github.seregamorph</groupId>
     <artifactId>spring-test-timeline</artifactId>
-    <name>spring-test-timeline</name>
     <version>0.1-SNAPSHOT</version>
+
+    <name>spring-test-timeline</name>
     <description>
         Inspecting Spring Boot test efficiency. See the readme at GitHub page.
     </description>
