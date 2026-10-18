@@ -2,6 +2,7 @@ package com.github.seregamorph.testtimeline;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.lang.Nullable;
 
 import java.io.File;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -14,8 +15,13 @@ public abstract class EventTrackerSupport {
     private static final Logger logger = LoggerFactory.getLogger(EventTrackerSupport.class);
 
     /**
-     * Both reports are written to the current working directory, which for a Maven or Gradle test
-     * execution is the module directory. The HTML report inlines the JSON, but the JSON is kept as
+     * System property to define the report directory explicitly, e.g. {@code -DspringTestTimelineReportDir=reports}.
+     */
+    public static final String REPORT_DIR_PROPERTY = "springTestTimelineReportDir";
+
+    /**
+     * Both reports are written to the build output directory ({@code target/} for Maven, {@code build/} for Gradle)
+     * or the one defined via {@link #REPORT_DIR_PROPERTY}. The HTML report inlines the JSON, but the JSON is kept as
      * a separate machine-readable artifact.
      */
     private static final String JSON_REPORT_FILE_NAME = "spring-test-timeline.json";
@@ -44,15 +50,27 @@ public abstract class EventTrackerSupport {
         }
         // saves the report
         if (timelineHelper != null) {
+            File reportDir = getReportDir();
+            if (reportDir == null) {
+                logger.info("Neither Maven nor Gradle build is recognized, skipping Spring test timeline report. "
+                    + "Specify the report directory via -D{}=<path> system property", REPORT_DIR_PROPERTY);
+                return;
+            }
+            if (!reportDir.isDirectory() && !reportDir.mkdirs() && !reportDir.isDirectory()) {
+                logger.warn("Failed to create report directory {}, skipping Spring test timeline report",
+                    reportDir.getAbsolutePath());
+                return;
+            }
+
             TimelineReportData report = timelineHelper.generateReport();
-            File jsonFile = new File(JSON_REPORT_FILE_NAME);
+            File jsonFile = new File(reportDir, JSON_REPORT_FILE_NAME);
             byte[] reportData = JsonSerializers.serialize(report);
             MoreFileUtils.write(jsonFile, reportData);
 
             // the HTML report is a diagnostic artifact: a failure to render it should never
             // fail the test run that just succeeded
             try {
-                File htmlFile = new File(HTML_REPORT_FILE_NAME);
+                File htmlFile = new File(reportDir, HTML_REPORT_FILE_NAME);
                 MoreFileUtils.write(htmlFile, TimelineHtmlReport.render(reportData));
                 logger.info("Spring test timeline report: {}", htmlFile.getAbsolutePath());
             } catch (RuntimeException e) {
@@ -62,24 +80,33 @@ public abstract class EventTrackerSupport {
         }
     }
 
-    /*
+    /**
+     * Resolves the directory for the reports: the explicit {@value #REPORT_DIR_PROPERTY} system property, otherwise
+     * {@code target/} of a Maven module or {@code build/} of a Gradle project. Returns null if none is recognized.
+     */
     @Nullable
-    private static File getReportsBaseDir() {
-        // todo target
-        // "basedir" is provided by Maven, it's module root
-        String basedirProperty = System.getProperty("basedir");
-        if (basedirProperty == null) {
-            return null;
+    private static File getReportDir() {
+        String reportDirProperty = System.getProperty(REPORT_DIR_PROPERTY);
+        if (reportDirProperty != null && !reportDirProperty.trim().isEmpty()) {
+            return new File(reportDirProperty.trim());
         }
 
-        File basedir = new File(basedirProperty, "leakage-detector");
-        if ((basedir.mkdir() || basedir.exists()) && basedir.isDirectory()) {
-            return basedir;
+        // "basedir" is provided by Maven Surefire/Failsafe, it's the module root
+        String mavenBasedirProperty = System.getProperty("basedir");
+        File mavenBasedir = mavenBasedirProperty == null ? new File(".") : new File(mavenBasedirProperty);
+        // "org.gradle.test.worker" is set by Gradle in the forked test JVMs, the working directory is the project dir
+        boolean gradleWorker = System.getProperty("org.gradle.test.worker") != null;
+        File currentDir = new File(".");
+
+        if (!gradleWorker && new File(mavenBasedir, "pom.xml").isFile()) {
+            return new File(mavenBasedir, "target");
         }
-        logger.warn("Failed to create {}", basedir);
+        if (new File(currentDir, "build.gradle").isFile() || new File(currentDir, "build.gradle.kts").isFile()
+            || gradleWorker) {
+            return new File(currentDir, "build");
+        }
         return null;
     }
-    */
 
     static void contextInitializing(String contextId) {
         if (timelineHelper == null) {
