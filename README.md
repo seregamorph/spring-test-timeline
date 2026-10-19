@@ -20,6 +20,11 @@ testRuntimeOnly("com.github.seregamorph:spring-test-timeline:0.1-SNAPSHOT")
 
 and then run integration tests of the project.
 
+## Sample report
+Sample report for [spring-petclinic](https://github.com/spring-projects/spring-petclinic):
+
+<img src="docs/timeline.png" alt="Timeline" width="700"/>
+
 ## Configuring
 
 When the tests finish, `spring-test-timeline.html` and `spring-test-timeline.json` are written to the build output directory:
