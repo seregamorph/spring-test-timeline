@@ -19,3 +19,33 @@ testRuntimeOnly("com.github.seregamorph:spring-test-timeline:0.1-SNAPSHOT")
 ```
 
 and then run integration tests of the project.
+
+## Configuring
+
+When the tests finish, `spring-test-timeline.html` and `spring-test-timeline.json` are written to the build output directory:
+`target/` for Maven or `build/` for Gradle.
+
+To write them to another directory, set the `springTestTimelineReportDir` system property on the test JVM. A relative
+path resolves against the test JVM's working directory.
+
+Maven (Surefire/Failsafe):
+```xml
+<plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-failsafe-plugin</artifactId>
+    <configuration>
+        <systemPropertyVariables>
+            <springTestTimelineReportDir>${project.build.directory}/timeline</springTestTimelineReportDir>
+        </systemPropertyVariables>
+    </configuration>
+</plugin>
+```
+
+Or pass it on the command line: `./mvnw verify -DspringTestTimelineReportDir=/tmp/timeline`.
+
+Gradle:
+```kotlin
+tasks.test {
+    systemProperty("springTestTimelineReportDir", layout.buildDirectory.dir("timeline").get().asFile.absolutePath)
+}
+```
