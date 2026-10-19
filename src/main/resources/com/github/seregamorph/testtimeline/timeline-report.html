@@ -55,7 +55,7 @@
            and has to stay legible on both row shades */
         .lane.alt { fill: #f4f6f9; }
         .lane { fill: #fcfdfd; }
-        .lane-label { fill: var(--muted); font-size: 11px; cursor: default; }
+        .lane-label { fill: var(--muted); font-size: 10.5px; cursor: default; }
         .lane-label.hl { fill: var(--ink); font-weight: 600; }
         .seg rect { rx: 2; cursor: pointer; }
         .seg rect:hover { stroke: #1f2933; stroke-width: 1.5; }
@@ -198,7 +198,9 @@
 
     // left gutter is wider than the reference report's: lanes are named after the test class
     // that triggered the context, not "worker-N". Every chart shares it so columns line up.
+    // M.left is resized by buildGantt() to fit the longest lane label (see fitGutter).
     const M={left:172,right:18,top:8,bottom:18};
+    const GUTTER_MIN=172, GUTTER_MAX=360, GUTTER_MAX_FRAC=0.3, LABEL_PAD=14;
     const width = () => document.getElementById("gantt").clientWidth || 1400;
     const x = d3.scaleLinear().domain([T0,T1]);      // base scale; domain set after load, range per render
     let xz = x;                                       // current (zoomed) scale, shared by all charts
@@ -333,9 +335,24 @@
             +`<div class="classes" data-cols="${cols}" style="column-count:${cols}">${items}</div>`;
     }
 
+    const laneLabel=c=>`#${c.id} ${simpleName(c.testClass)}`;
+    const laneSuffix=c=>c.testClasses.length>1?` +${c.testClasses.length-1}`:"";
+
+    // widen the shared gutter to the longest untrimmed lane label, but never let it eat more
+    // than a fraction of the chart; anything longer is still trimmed by fitLabel
+    function fitGutter(svg,W){
+        const probe=svg.append("text").attr("class","lane-label");
+        let max=0;
+        contexts.forEach(c=>{probe.text(laneLabel(c)+laneSuffix(c));
+            max=Math.max(max,probe.node().getComputedTextLength());});
+        probe.remove();
+        M.left=Math.round(Math.max(GUTTER_MIN,Math.min(GUTTER_MAX,W*GUTTER_MAX_FRAC,max+LABEL_PAD+2)));
+    }
+
     /* ====================== Gantt swimlanes ====================== */
     function buildGantt(){
         const W=width(), LANE_H=24, GAP=3;
+        fitGutter(d3.select("#gantt").html("").append("svg"),W);
         const innerW=W-M.left-M.right, innerH=N_LANES*(LANE_H+GAP);
         const H=innerH+M.top+M.bottom;
         INNERW=innerW; x.range([0,innerW]);
@@ -358,8 +375,7 @@
                 .attr("y",i*(LANE_H+GAP)).attr("width",innerW).attr("height",LANE_H);
             const t=labels.append("text").attr("class","lane-label").attr("x",-8)
                 .attr("y",i*(LANE_H+GAP)+LANE_H/2+4).attr("text-anchor","end");
-            const reused=c.testClasses.length-1;
-            fitLabel(t.node(), `#${c.id} ${simpleName(c.testClass)}`, M.left-14, reused>0?` +${reused}`:"");
+            fitLabel(t.node(), laneLabel(c), M.left-LABEL_PAD, laneSuffix(c));
             t.on("pointerenter",ev=>{ frameKey=c.lane; drawFrame();
                     showTip(`<b>context #${esc(c.id)}</b>`+
                         `<br><span class="row">created by ${esc(c.testClass)}</span>`+
