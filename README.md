@@ -25,12 +25,25 @@ Sample report for [spring-petclinic](https://github.com/spring-projects/spring-p
 
 <img src="docs/timeline.png" alt="Timeline" width="700"/>
 
-## Configuring
+## Report location
 
 When the tests finish, `spring-test-timeline.html` is written to the build output directory: `target/` for Maven or
-`build/` for Gradle.
+`build/` for Gradle. It is a single self-contained file with the report data inlined, so you can open it directly in a
+browser, attach it as a CI artifact or share it.
 
-To write it to another directory, set the `springTestTimelineReportDir` system property on the test JVM. A relative
+If the build tool can't be detected (no `pom.xml` or `build.gradle[.kts]` in the working directory) and no report
+directory is configured, the report is skipped and an INFO message is logged.
+
+## Privacy
+
+All collected data stays on your machine. The library sends nothing over the network: it only writes the HTML report to
+the local file system. The one external request is made by the browser when you open the report: it loads the
+[D3.js](https://d3js.org/) library from the jsDelivr CDN (`https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js`). The report
+data is not sent anywhere.
+
+## Configuring
+
+To write the report it to another directory, set the `springTestTimelineReportDir` system property on the test JVM. A relative
 path resolves against the test JVM's working directory.
 
 Maven (Surefire/Failsafe):
