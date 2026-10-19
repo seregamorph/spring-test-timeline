@@ -75,8 +75,14 @@
         .legend i { width: 11px; height: 11px; border-radius: 2px; display: inline-block; }
         .tip { position: fixed; pointer-events: none; z-index: 50; opacity: 0; background: #1f2933; color: #fff;
             padding: 7px 9px; border-radius: 6px; font-size: 12px; max-width: 360px;
-            box-shadow: 0 4px 14px rgba(0,0,0,.25); transition: opacity .08s; }
+            box-shadow: 0 4px 14px rgba(0,0,0,.25); transition: opacity .08s; overflow-wrap: anywhere; }
         .tip b { color: #ffd479; } .tip .row { color: #cbd2d9; }
+        /* "used by" list: a context shared by many classes is laid out in columns so the tip
+           stays within the viewport; long names wrap at camelCase boundaries (<wbr>) */
+        .tip.wide { max-width: none; }
+        .tip .classes { margin-top: 2px; font-size: 11px; line-height: 1.35; color: #cbd2d9; column-gap: 18px; }
+        .tip .classes div { break-inside: avoid; padding-left: 12px; text-indent: -12px; overflow-wrap: anywhere; }
+        .tip .classes .outer, .tip .classes .nested { color: #9aa5b1; }
         details.table-panel { margin-bottom: 6px; }
         details.table-panel > summary { cursor: pointer; font-size: 11px; font-weight: 600; color: var(--muted);
             text-transform: uppercase; letter-spacing: .04em; padding: 6px 12px; background: #fff;
@@ -199,10 +205,16 @@
 
     const tip=d3.select("#tip");
     function showTip(html,ev){tip.html(html).style("opacity",1);
+        // a tip with a multi-column class list gets an explicit width (shrink-to-fit
+        // doesn't size multicol content well), clamped to the viewport
+        const cls=tip.select(".classes").node(), cols=cls?+cls.dataset.cols:0;
+        tip.classed("wide",cols>1).style("width",cols>1?Math.min(cols*COL_W+18,innerWidth-16)+"px":null);
         const pad=14,r=tip.node().getBoundingClientRect();
         let X=ev.clientX+pad,Y=ev.clientY+pad;
         if(X+r.width>innerWidth)X=ev.clientX-r.width-pad;
         if(Y+r.height>innerHeight)Y=ev.clientY-r.height-pad;
+        X=Math.max(4,Math.min(X,innerWidth-r.width-4));
+        Y=Math.max(4,Math.min(Y,innerHeight-r.height-4));
         tip.style("left",X+"px").style("top",Y+"px");}
     const hideTip=()=>tip.style("opacity",0);
 
@@ -291,17 +303,34 @@
     }
 
     // the classes that used a context: the first one created it, the rest reused it from the
-    // Spring context cache. Capped so a context shared by the whole suite keeps the tip on screen.
-    const MAX_TIP_CLASSES=30;
+    // Spring context cache. Nested classes (Outer$Inner) are grouped under their outer class,
+    // in the order of first use, and a long list flows into columns. Capped so a context shared
+    // by the whole suite keeps the tip on screen.
+    const MAX_TIP_CLASSES=80, COL_W=250;
+    const wrapCamel=s=>esc(s).replace(/([a-z0-9])([A-Z])/g,"$1<wbr>$2");
     function usedByHtml(c){
         const n=c.testClasses.length;
         if(!n) return "";
-        let html=`<br><span class="row">used by <b>${n}</b> test class${n===1?"":"es"}:</span>`;
-        c.testClasses.slice(0,MAX_TIP_CLASSES).forEach((tc,i)=>{
-            html+=`<br><span class="row">&nbsp;&nbsp;${i===0?"★":"·"} ${esc(simpleName(tc))}</span>`;
+        const groups=new Map();
+        c.testClasses.slice(0,MAX_TIP_CLASSES).forEach(tc=>{
+            const s=simpleName(tc), i=s.indexOf("$");
+            const outer=i<0?s:s.slice(0,i);
+            let g=groups.get(outer);
+            if(!g) groups.set(outer,g={outer,self:false,nested:[]});
+            if(i<0) g.self=true; else g.nested.push(s.slice(i+1));
         });
-        if(n>MAX_TIP_CLASSES) html+=`<br><span class="row">&nbsp;&nbsp;… and ${n-MAX_TIP_CLASSES} more (see the context table)</span>`;
-        return html;
+        let items="", first=true;
+        groups.forEach(g=>{
+            // the outer class is dimmed when it only hosts the nested classes that used the context
+            items+=`<div>${first?"★":"·"} <span class="${g.self?"":"outer"}">${wrapCamel(g.outer)}</span>`
+                +(g.nested.length?` <span class="nested">› ${g.nested.map(wrapCamel).join(", ")}</span>`:"")+`</div>`;
+            first=false;
+        });
+        if(n>MAX_TIP_CLASSES) items+=`<div>… and ${n-MAX_TIP_CLASSES} more (see the context table)</div>`;
+        const rows=groups.size+(n>MAX_TIP_CLASSES?1:0);
+        const cols=rows>24?3:rows>8?2:1;
+        return `<br><span class="row">used by <b>${n}</b> test class${n===1?"":"es"}:</span>`
+            +`<div class="classes" data-cols="${cols}" style="column-count:${cols}">${items}</div>`;
     }
 
     /* ====================== Gantt swimlanes ====================== */
