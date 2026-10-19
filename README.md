@@ -15,7 +15,7 @@ Add Maven
 
 or Gradle dependency to your project:
 ```kotlin
-integrationTestRuntimeOnly("com.github.seregamorph:spring-test-timeline:0.1-SNAPSHOT")
+testRuntimeOnly("com.github.seregamorph:spring-test-timeline:0.1-SNAPSHOT")
 ```
 
 and then run integration tests of the project.
