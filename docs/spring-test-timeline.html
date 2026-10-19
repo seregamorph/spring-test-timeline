@@ -1,0 +1,2002 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Spring Test Context Timeline</title>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+    <style>
+        :root {
+            --ink: #1f2933; --muted: #7b8794; --grid: #eceff1; --border: #e0e4e8;
+            --accent: #2f6fed; --crosshair: #d23f3f;
+            /* lifecycle phase palette — validated on the light chart surface (#fafbfc):
+               lightness band / chroma floor / adjacent CVD ΔE 13.0 / normal-vision ΔE 16.3.
+               contrast relief for the sub-3:1 steps = in-bar labels + legend + context table. */
+            --ph-creating:   #1baf7a;
+            --ph-refreshing: #2a78d6;
+            --ph-inuse:      #4a3aa7;
+            --ph-paused:     #eda100;
+            --ph-closing:    #e34948;
+            /* "kept alive" is an idle state, not an activity — deliberately neutral so the
+               band that covers most of the timeline stays recessive and the real work pops. */
+            --ph-keepalive:      #ccd7e3;
+            --ph-keepalive-edge: #93a3b5;
+            --ph-keepalive-ink:  #46525f;
+        }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; background: #f5f6f8; color: var(--ink);
+            font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        .wrap { max-width: 1500px; margin: 0 auto; padding: 10px 26px 14px; }
+        header.report-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 2px; }
+        header.report-head h1 { font-size: 18px; font-weight: 600; margin: 0; }
+        header.report-head .sub { color: var(--muted); font-size: 12px; }
+        .toolbar { display: flex; align-items: center; gap: 10px; margin: 6px 0 8px; flex-wrap: wrap; }
+        .toolbar button { border: 1px solid var(--border); background: #fff; color: var(--ink);
+            padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+        .toolbar button:hover { border-color: var(--accent); color: var(--accent); }
+        .toolbar .hint { color: var(--muted); font-size: 12px; }
+        .panel { background: #fff; border: 1px solid var(--border); border-radius: 8px;
+            box-shadow: 0 1px 2px rgba(16,24,40,.04); margin-bottom: 6px; overflow: hidden; }
+        .panel.hidden { display: none; }
+        .panel .panel-title { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase;
+            letter-spacing: .04em; padding: 4px 12px 0; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+        /* per-series swatches in the panel title double as the metric legend, so a
+           two-series chart never identifies its series by color alone */
+        .panel .panel-title .key { display: inline-flex; align-items: center; gap: 4px;
+            text-transform: none; letter-spacing: 0; font-weight: 500; }
+        .panel .panel-title .key i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+        .panel .panel-title .note { text-transform: none; letter-spacing: 0; font-weight: 400; opacity: .8; }
+        svg { display: block; width: 100%; }
+        .axis path, .axis line { stroke: var(--grid); }
+        .axis text { fill: var(--muted); font-size: 11px; }
+        .grid line { stroke: var(--grid); }
+        .grid path { stroke: none; }
+        /* alternation is kept subtle: the idle "kept alive" band is itself a light neutral
+           and has to stay legible on both row shades */
+        .lane.alt { fill: #f4f6f9; }
+        .lane { fill: #fcfdfd; }
+        .lane-label { fill: var(--muted); font-size: 10.5px; cursor: default; }
+        .lane-label.hl { fill: var(--ink); font-weight: 600; }
+        .seg rect { rx: 2; cursor: pointer; }
+        .seg rect:hover { stroke: #1f2933; stroke-width: 1.5; }
+        /* outline framing the whole lifespan of the hovered context */
+        .ctx-frame { fill: rgba(31,41,51,.05); stroke: #1f2933; stroke-width: 1.5;
+            pointer-events: none; opacity: 0; }
+        .seg text { font-size: 10px; fill: #fff; pointer-events: none; }
+        .seg text.dark { fill: var(--ph-keepalive-ink); }
+        .crosshair { stroke: var(--crosshair); stroke-width: 1; stroke-dasharray: 3 2; pointer-events: none; opacity: 0; }
+        .zoom-overlay { fill: none; pointer-events: all; cursor: crosshair; }
+        .nav-area { fill: #cfd6df; }
+        .brush .selection { fill: rgba(47,111,237,.16); stroke: var(--accent); shape-rendering: crispEdges; }
+        .brush .handle { fill: var(--accent); }
+        .brush .overlay { cursor: pointer; }
+        .legend { display: flex; gap: 14px; flex-wrap: wrap; padding: 2px 12px 4px; color: var(--muted); font-size: 11px; }
+        .legend span { display: inline-flex; align-items: center; gap: 5px; }
+        .legend i { width: 11px; height: 11px; border-radius: 2px; display: inline-block; }
+        .tip { position: fixed; pointer-events: none; z-index: 50; opacity: 0; background: #1f2933; color: #fff;
+            padding: 7px 9px; border-radius: 6px; font-size: 12px; max-width: 360px;
+            box-shadow: 0 4px 14px rgba(0,0,0,.25); transition: opacity .08s; overflow-wrap: anywhere; }
+        .tip b { color: #ffd479; } .tip .row { color: #cbd2d9; }
+        /* "used by" list: a context shared by many classes is laid out in columns so the tip
+           stays within the viewport; long names wrap at camelCase boundaries (<wbr>) */
+        .tip.wide { max-width: none; }
+        .tip .classes { margin-top: 2px; font-size: 11px; line-height: 1.35; color: #cbd2d9; column-gap: 18px; }
+        .tip .classes div { break-inside: avoid; padding-left: 12px; text-indent: -12px; overflow-wrap: anywhere; }
+        .tip .classes .outer, .tip .classes .nested { color: #9aa5b1; }
+        details.table-panel { margin-bottom: 6px; }
+        details.table-panel > summary { cursor: pointer; font-size: 11px; font-weight: 600; color: var(--muted);
+            text-transform: uppercase; letter-spacing: .04em; padding: 6px 12px; background: #fff;
+            border: 1px solid var(--border); border-radius: 8px; list-style: none; }
+        details.table-panel > summary::-webkit-details-marker { display: none; }
+        details.table-panel > summary::before { content: "▸ "; }
+        details.table-panel[open] > summary { border-radius: 8px 8px 0 0; border-bottom: none; }
+        details.table-panel[open] > summary::before { content: "▾ "; }
+        .table-body { background: #fff; border: 1px solid var(--border); border-top: none;
+            border-radius: 0 0 8px 8px; overflow-x: auto; }
+        table.ctx { border-collapse: collapse; width: 100%; font-size: 12px; }
+        table.ctx th, table.ctx td { padding: 4px 10px; text-align: right; white-space: nowrap;
+            border-top: 1px solid var(--grid); }
+        table.ctx th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase;
+            letter-spacing: .03em; border-top: none; }
+        table.ctx td.l, table.ctx th.l { text-align: left; }
+        table.ctx td.dim { color: var(--muted); }
+        table.ctx tbody tr:hover { background: #f7f9fb; }
+        .report-foot { text-align: center; color: var(--muted); font-size: 11px; padding: 8px 0 4px; }
+        .report-foot a { color: var(--muted); text-decoration: none; }
+        .report-foot a:hover { color: var(--accent); text-decoration: underline; }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <header class="report-head">
+        <h1 id="headline">Spring test context timeline</h1>
+        <span class="sub" id="subline"></span>
+    </header>
+    <div class="toolbar">
+        <button id="resetZoom">Reset zoom</button>
+        <span class="hint">Scroll / pinch / double-click to zoom · drag or two-finger swipe to pan · all charts stay aligned</span>
+    </div>
+
+    <div class="panel">
+        <div class="panel-title">Execution — Spring contexts</div>
+        <div id="legend" class="legend"></div>
+        <div id="gantt"></div>
+    </div>
+    <div class="panel"><div class="panel-title">Navigator — drag to scroll, resize handles to zoom</div><div id="nav"></div></div>
+    <div class="panel" id="panel-contexts"><div class="panel-title">Live Spring contexts</div><div id="ctxcount"></div></div>
+    <div class="panel" id="panel-cpu"><div class="panel-title">CPU utilization (%)</div><div id="cpu"></div></div>
+    <div class="panel" id="panel-threads"><div class="panel-title">Live threads</div><div id="threads"></div></div>
+    <div class="panel" id="panel-heap"><div class="panel-title">Heap memory<span class="note">dashed rule = GC</span></div><div id="heap"></div></div>
+    <div class="panel" id="panel-containers"><div class="panel-title">Testcontainers (running containers)</div><div id="containers"></div></div>
+
+    <details class="table-panel" id="tablePanel">
+        <summary>Context table</summary>
+        <div class="table-body"><table class="ctx" id="ctxTable"></table></div>
+    </details>
+
+    <div class="report-foot">
+        Generated by <a href="https://github.com/seregamorph/spring-test-timeline" target="_blank" rel="noopener">spring-test-timeline</a> (uses D3.js v7)
+    </div>
+</div>
+<div class="tip" id="tip"></div>
+
+<!-- Timeline data. TimelineHtmlReport substitutes the placeholder token below with the
+     contents of spring-test-timeline.json, producing a self-contained single-file report.
+     If this file is opened as the raw template (token not substituted) the loader falls
+     back to fetching spring-test-timeline.json next to this page. -->
+<script id="timelineData" type="application/json">{
+  "meta" : {
+    "threads" : 1,
+    "duration" : 17.816616,
+    "contexts" : 11
+  },
+  "contexts" : [
+    {
+      "contextId" : "1",
+      "testClassNames" : [
+        "org.springframework.samples.petclinic.vet.VetControllerTests"
+      ],
+      "events" : [
+        {
+          "type" : "creating",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.vet.VetControllerTests",
+          "start" : 1.029678,
+          "end" : 1.711555,
+          "duration" : 0.681877
+        },
+        {
+          "type" : "refreshed",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.vet.VetControllerTests",
+          "start" : 1.711555,
+          "end" : 1.890346,
+          "duration" : 0.178791
+        },
+        {
+          "type" : "paused",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.owner.OwnerControllerTests",
+          "start" : 1.890346,
+          "end" : 2.278706,
+          "duration" : 0.388360
+        },
+        {
+          "type" : "keep_alive",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.vet.VetControllerTests",
+          "start" : 2.278706,
+          "end" : 17.816616,
+          "duration" : 15.537910
+        }
+      ]
+    },
+    {
+      "contextId" : "2",
+      "testClassNames" : [
+        "org.springframework.samples.petclinic.owner.OwnerControllerTests"
+      ],
+      "events" : [
+        {
+          "type" : "creating",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.owner.OwnerControllerTests",
+          "start" : 2.290510,
+          "end" : 2.406323,
+          "duration" : 0.115813
+        },
+        {
+          "type" : "refreshed",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.owner.OwnerControllerTests",
+          "start" : 2.406323,
+          "end" : 2.442293,
+          "duration" : 0.035970
+        },
+        {
+          "type" : "paused",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.owner.PetControllerTests",
+          "start" : 2.442293,
+          "end" : 2.666263,
+          "duration" : 0.223970
+        },
+        {
+          "type" : "keep_alive",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.owner.OwnerControllerTests",
+          "start" : 2.666263,
+          "end" : 17.816616,
+          "duration" : 15.150353
+        }
+      ]
+    },
+    {
+      "contextId" : "3",
+      "testClassNames" : [
+        "org.springframework.samples.petclinic.owner.PetControllerTests",
+        "org.springframework.samples.petclinic.owner.PetControllerTests$ProcessUpdateFormHasErrors",
+        "org.springframework.samples.petclinic.owner.PetControllerTests$ProcessCreationFormHasErrors"
+      ],
+      "events" : [
+        {
+          "type" : "creating",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.owner.PetControllerTests",
+          "start" : 2.678554,
+          "end" : 2.773330,
+          "duration" : 0.094776
+        },
+        {
+          "type" : "refreshed",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.owner.PetControllerTests",
+          "start" : 2.773330,
+          "end" : 2.799639,
+          "duration" : 0.026309
+        },
+        {
+          "type" : "paused",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.owner.VisitControllerTests",
+          "start" : 2.799639,
+          "end" : 2.943892,
+          "duration" : 0.144253
+        },
+        {
+          "type" : "keep_alive",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.owner.PetControllerTests",
+          "start" : 2.943892,
+          "end" : 17.816616,
+          "duration" : 14.872724
+        }
+      ]
+    },
+    {
+      "contextId" : "4",
+      "testClassNames" : [
+        "org.springframework.samples.petclinic.owner.VisitControllerTests"
+      ],
+      "events" : [
+        {
+          "type" : "creating",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.owner.VisitControllerTests",
+          "start" : 2.951456,
+          "end" : 2.988875,
+          "duration" : 0.037419
+        },
+        {
+          "type" : "refreshed",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.owner.VisitControllerTests",
+          "start" : 2.988875,
+          "end" : 3.013922,
+          "duration" : 0.025047
+        },
+        {
+          "type" : "paused",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.PostgresIntegrationTests",
+          "start" : 3.013922,
+          "end" : 3.065929,
+          "duration" : 0.052007
+        },
+        {
+          "type" : "keep_alive",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.owner.VisitControllerTests",
+          "start" : 3.065929,
+          "end" : 17.816616,
+          "duration" : 14.750687
+        }
+      ]
+    },
+    {
+      "contextId" : "5",
+      "testClassNames" : [
+        "org.springframework.samples.petclinic.PostgresIntegrationTests"
+      ],
+      "events" : [
+        {
+          "type" : "creating",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.PostgresIntegrationTests",
+          "start" : 3.076249,
+          "end" : 5.659820,
+          "duration" : 2.583571
+        },
+        {
+          "type" : "refreshed",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.PostgresIntegrationTests",
+          "start" : 5.659820,
+          "end" : 6.108483,
+          "duration" : 0.448663
+        },
+        {
+          "type" : "paused",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.PetClinicConcurrencyTests",
+          "start" : 6.108483,
+          "end" : 6.348286,
+          "duration" : 0.239803
+        },
+        {
+          "type" : "keep_alive",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.PostgresIntegrationTests",
+          "start" : 6.348286,
+          "end" : 17.816616,
+          "duration" : 11.468330
+        }
+      ]
+    },
+    {
+      "contextId" : "6",
+      "testClassNames" : [
+        "org.springframework.samples.petclinic.PetClinicConcurrencyTests"
+      ],
+      "events" : [
+        {
+          "type" : "creating",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.PetClinicConcurrencyTests",
+          "start" : 6.354926,
+          "end" : 6.700438,
+          "duration" : 0.345512
+        },
+        {
+          "type" : "refreshed",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.PetClinicConcurrencyTests",
+          "start" : 6.700438,
+          "end" : 6.772113,
+          "duration" : 0.071675
+        },
+        {
+          "type" : "paused",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.MySqlIntegrationTests",
+          "start" : 6.772113,
+          "end" : 12.088796,
+          "duration" : 5.316683
+        },
+        {
+          "type" : "keep_alive",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.PetClinicConcurrencyTests",
+          "start" : 12.088796,
+          "end" : 17.816616,
+          "duration" : 5.727820
+        }
+      ]
+    },
+    {
+      "contextId" : "7",
+      "testClassNames" : [
+        "org.springframework.samples.petclinic.MySqlIntegrationTests"
+      ],
+      "events" : [
+        {
+          "type" : "creating",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.MySqlIntegrationTests",
+          "start" : 12.097500,
+          "end" : 12.414460,
+          "duration" : 0.316960
+        },
+        {
+          "type" : "refreshed",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.MySqlIntegrationTests",
+          "start" : 12.414460,
+          "end" : 16.955182,
+          "duration" : 4.540722
+        },
+        {
+          "type" : "paused",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.system.CrashControllerIntegrationTests",
+          "start" : 16.955182,
+          "end" : 17.191133,
+          "duration" : 0.235951
+        },
+        {
+          "type" : "keep_alive",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.MySqlIntegrationTests",
+          "start" : 17.191133,
+          "end" : 17.816616,
+          "duration" : 0.625483
+        }
+      ]
+    },
+    {
+      "contextId" : "8",
+      "testClassNames" : [
+        "org.springframework.samples.petclinic.system.CrashControllerIntegrationTests"
+      ],
+      "events" : [
+        {
+          "type" : "creating",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.system.CrashControllerIntegrationTests",
+          "start" : 17.197258,
+          "end" : 17.270473,
+          "duration" : 0.073215
+        },
+        {
+          "type" : "refreshed",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.system.CrashControllerIntegrationTests",
+          "start" : 17.270473,
+          "end" : 17.305714,
+          "duration" : 0.035241
+        },
+        {
+          "type" : "paused",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.system.WelcomeControllerTests",
+          "start" : 17.305714,
+          "end" : 17.353177,
+          "duration" : 0.047463
+        },
+        {
+          "type" : "keep_alive",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.system.CrashControllerIntegrationTests",
+          "start" : 17.353177,
+          "end" : 17.816616,
+          "duration" : 0.463439
+        }
+      ]
+    },
+    {
+      "contextId" : "9",
+      "testClassNames" : [
+        "org.springframework.samples.petclinic.system.WelcomeControllerTests"
+      ],
+      "events" : [
+        {
+          "type" : "creating",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.system.WelcomeControllerTests",
+          "start" : 17.357891,
+          "end" : 17.375097,
+          "duration" : 0.017206
+        },
+        {
+          "type" : "refreshed",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.system.WelcomeControllerTests",
+          "start" : 17.375097,
+          "end" : 17.387852,
+          "duration" : 0.012755
+        },
+        {
+          "type" : "paused",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.service.ClinicServiceTests",
+          "start" : 17.387852,
+          "end" : 17.414292,
+          "duration" : 0.026440
+        },
+        {
+          "type" : "keep_alive",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.system.WelcomeControllerTests",
+          "start" : 17.414292,
+          "end" : 17.816616,
+          "duration" : 0.402324
+        }
+      ]
+    },
+    {
+      "contextId" : "10",
+      "testClassNames" : [
+        "org.springframework.samples.petclinic.service.ClinicServiceTests"
+      ],
+      "events" : [
+        {
+          "type" : "creating",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.service.ClinicServiceTests",
+          "start" : 17.419380,
+          "end" : 17.488856,
+          "duration" : 0.069476
+        },
+        {
+          "type" : "refreshed",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.service.ClinicServiceTests",
+          "start" : 17.488856,
+          "end" : 17.501579,
+          "duration" : 0.012723
+        },
+        {
+          "type" : "paused",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.PetClinicIntegrationTests",
+          "start" : 17.501579,
+          "end" : 17.583232,
+          "duration" : 0.081653
+        },
+        {
+          "type" : "keep_alive",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.service.ClinicServiceTests",
+          "start" : 17.583232,
+          "end" : 17.816616,
+          "duration" : 0.233384
+        }
+      ]
+    },
+    {
+      "contextId" : "11",
+      "testClassNames" : [
+        "org.springframework.samples.petclinic.PetClinicIntegrationTests"
+      ],
+      "events" : [
+        {
+          "type" : "creating",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.PetClinicIntegrationTests",
+          "start" : 17.588873,
+          "end" : 17.705147,
+          "duration" : 0.116274
+        },
+        {
+          "type" : "refreshed",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.PetClinicIntegrationTests",
+          "start" : 17.705147,
+          "end" : 17.759502,
+          "duration" : 0.054355
+        },
+        {
+          "type" : "keep_alive",
+          "threadId" : 0,
+          "testClassName" : "org.springframework.samples.petclinic.PetClinicIntegrationTests",
+          "start" : 17.759502,
+          "end" : 17.816616,
+          "duration" : 0.057114
+        }
+      ]
+    }
+  ],
+  "metrics" : [
+    {
+      "t" : 0.009321,
+      "active" : 0,
+      "heapUsed" : 27,
+      "heapCommitted" : 1032,
+      "gc" : true,
+      "processCpu" : 0.000,
+      "systemCpu" : 0.000,
+      "totalThreads" : 8,
+      "daemonThreads" : 7,
+      "containersCount" : 0
+    },
+    {
+      "t" : 0.771001,
+      "active" : 0,
+      "heapUsed" : 21,
+      "heapCommitted" : 136,
+      "gc" : true,
+      "processCpu" : 23.962,
+      "systemCpu" : 28.392,
+      "totalThreads" : 9,
+      "daemonThreads" : 7,
+      "containersCount" : 0
+    },
+    {
+      "t" : 1.029269,
+      "active" : 1,
+      "heapUsed" : 62,
+      "heapCommitted" : 112,
+      "gc" : true,
+      "processCpu" : 18.971,
+      "systemCpu" : 28.392,
+      "totalThreads" : 10,
+      "daemonThreads" : 7,
+      "containersCount" : 0
+    },
+    {
+      "t" : 1.287327,
+      "active" : 1,
+      "heapUsed" : 209,
+      "heapCommitted" : 568,
+      "gc" : false,
+      "processCpu" : 28.192,
+      "systemCpu" : 28.392,
+      "totalThreads" : 9,
+      "daemonThreads" : 7,
+      "containersCount" : 0
+    },
+    {
+      "t" : 1.545239,
+      "active" : 1,
+      "heapUsed" : 265,
+      "heapCommitted" : 568,
+      "gc" : true,
+      "processCpu" : 7.164,
+      "systemCpu" : 22.455,
+      "totalThreads" : 11,
+      "daemonThreads" : 9,
+      "containersCount" : 0
+    },
+    {
+      "t" : 1.798738,
+      "active" : 1,
+      "heapUsed" : 40,
+      "heapCommitted" : 136,
+      "gc" : true,
+      "processCpu" : 20.770,
+      "systemCpu" : 25.499,
+      "totalThreads" : 11,
+      "daemonThreads" : 9,
+      "containersCount" : 0
+    },
+    {
+      "t" : 2.051086,
+      "active" : 1,
+      "heapUsed" : 34,
+      "heapCommitted" : 152,
+      "gc" : true,
+      "processCpu" : 22.175,
+      "systemCpu" : 25.055,
+      "totalThreads" : 11,
+      "daemonThreads" : 9,
+      "containersCount" : 0
+    },
+    {
+      "t" : 2.308895,
+      "active" : 2,
+      "heapUsed" : 52,
+      "heapCommitted" : 592,
+      "gc" : false,
+      "processCpu" : 15.425,
+      "systemCpu" : 18.038,
+      "totalThreads" : 11,
+      "daemonThreads" : 9,
+      "containersCount" : 0
+    },
+    {
+      "t" : 2.563521,
+      "active" : 2,
+      "heapUsed" : 124,
+      "heapCommitted" : 592,
+      "gc" : false,
+      "processCpu" : 27.925,
+      "systemCpu" : 32.274,
+      "totalThreads" : 11,
+      "daemonThreads" : 9,
+      "containersCount" : 0
+    },
+    {
+      "t" : 2.821319,
+      "active" : 3,
+      "heapUsed" : 196,
+      "heapCommitted" : 592,
+      "gc" : false,
+      "processCpu" : 27.479,
+      "systemCpu" : 51.204,
+      "totalThreads" : 11,
+      "daemonThreads" : 9,
+      "containersCount" : 0
+    },
+    {
+      "t" : 3.079169,
+      "active" : 5,
+      "heapUsed" : 324,
+      "heapCommitted" : 592,
+      "gc" : false,
+      "processCpu" : 28.507,
+      "systemCpu" : 34.641,
+      "totalThreads" : 11,
+      "daemonThreads" : 9,
+      "containersCount" : 0
+    },
+    {
+      "t" : 3.337515,
+      "active" : 5,
+      "heapUsed" : 348,
+      "heapCommitted" : 592,
+      "gc" : false,
+      "processCpu" : 0.597,
+      "systemCpu" : 15.858,
+      "totalThreads" : 13,
+      "daemonThreads" : 11,
+      "containersCount" : 0
+    },
+    {
+      "t" : 3.591831,
+      "active" : 5,
+      "heapUsed" : 348,
+      "heapCommitted" : 592,
+      "gc" : false,
+      "processCpu" : 0.114,
+      "systemCpu" : 25.662,
+      "totalThreads" : 13,
+      "daemonThreads" : 11,
+      "containersCount" : 0
+    },
+    {
+      "t" : 3.850134,
+      "active" : 5,
+      "heapUsed" : 348,
+      "heapCommitted" : 592,
+      "gc" : false,
+      "processCpu" : 0.090,
+      "systemCpu" : 29.067,
+      "totalThreads" : 13,
+      "daemonThreads" : 11,
+      "containersCount" : 0
+    },
+    {
+      "t" : 4.106135,
+      "active" : 5,
+      "heapUsed" : 348,
+      "heapCommitted" : 592,
+      "gc" : false,
+      "processCpu" : 0.164,
+      "systemCpu" : 10.217,
+      "totalThreads" : 13,
+      "daemonThreads" : 11,
+      "containersCount" : 0
+    },
+    {
+      "t" : 4.364689,
+      "active" : 5,
+      "heapUsed" : 356,
+      "heapCommitted" : 592,
+      "gc" : true,
+      "processCpu" : 0.645,
+      "systemCpu" : 13.380,
+      "totalThreads" : 11,
+      "daemonThreads" : 9,
+      "containersCount" : 0
+    },
+    {
+      "t" : 4.624282,
+      "active" : 5,
+      "heapUsed" : 132,
+      "heapCommitted" : 592,
+      "gc" : false,
+      "processCpu" : 11.142,
+      "systemCpu" : 12.131,
+      "totalThreads" : 11,
+      "daemonThreads" : 9,
+      "containersCount" : 0
+    },
+    {
+      "t" : 4.883069,
+      "active" : 5,
+      "heapUsed" : 292,
+      "heapCommitted" : 592,
+      "gc" : true,
+      "processCpu" : 18.486,
+      "systemCpu" : 24.138,
+      "totalThreads" : 14,
+      "daemonThreads" : 9,
+      "containersCount" : 0
+    },
+    {
+      "t" : 5.140845,
+      "active" : 5,
+      "heapUsed" : 65,
+      "heapCommitted" : 592,
+      "gc" : true,
+      "processCpu" : 17.632,
+      "systemCpu" : 18.561,
+      "totalThreads" : 18,
+      "daemonThreads" : 13,
+      "containersCount" : 0
+    },
+    {
+      "t" : 5.400411,
+      "active" : 5,
+      "heapUsed" : 147,
+      "heapCommitted" : 240,
+      "gc" : true,
+      "processCpu" : 11.337,
+      "systemCpu" : 18.561,
+      "totalThreads" : 18,
+      "daemonThreads" : 13,
+      "containersCount" : 0
+    },
+    {
+      "t" : 5.655117,
+      "active" : 5,
+      "heapUsed" : 69,
+      "heapCommitted" : 240,
+      "gc" : true,
+      "processCpu" : 10.426,
+      "systemCpu" : 16.741,
+      "totalThreads" : 18,
+      "daemonThreads" : 13,
+      "containersCount" : 0
+    },
+    {
+      "t" : 5.911155,
+      "active" : 5,
+      "heapUsed" : 137,
+      "heapCommitted" : 240,
+      "gc" : true,
+      "processCpu" : 19.245,
+      "systemCpu" : 24.615,
+      "totalThreads" : 18,
+      "daemonThreads" : 13,
+      "containersCount" : 0
+    },
+    {
+      "t" : 6.170286,
+      "active" : 5,
+      "heapUsed" : 163,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 22.977,
+      "systemCpu" : 25.806,
+      "totalThreads" : 30,
+      "daemonThreads" : 25,
+      "containersCount" : 0
+    },
+    {
+      "t" : 6.428034,
+      "active" : 6,
+      "heapUsed" : 299,
+      "heapCommitted" : 632,
+      "gc" : true,
+      "processCpu" : 22.519,
+      "systemCpu" : 22.519,
+      "totalThreads" : 35,
+      "daemonThreads" : 30,
+      "containersCount" : 0
+    },
+    {
+      "t" : 6.682343,
+      "active" : 6,
+      "heapUsed" : 129,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 24.817,
+      "systemCpu" : 34.426,
+      "totalThreads" : 35,
+      "daemonThreads" : 27,
+      "containersCount" : 0
+    },
+    {
+      "t" : 6.935784,
+      "active" : 6,
+      "heapUsed" : 241,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 24.345,
+      "systemCpu" : 40.667,
+      "totalThreads" : 54,
+      "daemonThreads" : 46,
+      "containersCount" : 0
+    },
+    {
+      "t" : 7.190052,
+      "active" : 6,
+      "heapUsed" : 241,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 1.269,
+      "systemCpu" : 39.911,
+      "totalThreads" : 54,
+      "daemonThreads" : 46,
+      "containersCount" : 0
+    },
+    {
+      "t" : 7.443768,
+      "active" : 6,
+      "heapUsed" : 281,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 3.322,
+      "systemCpu" : 15.200,
+      "totalThreads" : 54,
+      "daemonThreads" : 46,
+      "containersCount" : 0
+    },
+    {
+      "t" : 7.698410,
+      "active" : 6,
+      "heapUsed" : 329,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 4.859,
+      "systemCpu" : 42.949,
+      "totalThreads" : 55,
+      "daemonThreads" : 47,
+      "containersCount" : 1
+    },
+    {
+      "t" : 7.961156,
+      "active" : 6,
+      "heapUsed" : 337,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 1.031,
+      "systemCpu" : 19.403,
+      "totalThreads" : 55,
+      "daemonThreads" : 47,
+      "containersCount" : 1
+    },
+    {
+      "t" : 8.220960,
+      "active" : 6,
+      "heapUsed" : 345,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.568,
+      "systemCpu" : 19.403,
+      "totalThreads" : 55,
+      "daemonThreads" : 47,
+      "containersCount" : 1
+    },
+    {
+      "t" : 8.483667,
+      "active" : 6,
+      "heapUsed" : 345,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.711,
+      "systemCpu" : 19.403,
+      "totalThreads" : 55,
+      "daemonThreads" : 47,
+      "containersCount" : 1
+    },
+    {
+      "t" : 8.743463,
+      "active" : 6,
+      "heapUsed" : 345,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.435,
+      "systemCpu" : 10.436,
+      "totalThreads" : 55,
+      "daemonThreads" : 47,
+      "containersCount" : 1
+    },
+    {
+      "t" : 9.010538,
+      "active" : 6,
+      "heapUsed" : 345,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.587,
+      "systemCpu" : 14.496,
+      "totalThreads" : 55,
+      "daemonThreads" : 47,
+      "containersCount" : 1
+    },
+    {
+      "t" : 9.282547,
+      "active" : 6,
+      "heapUsed" : 345,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.826,
+      "systemCpu" : 11.180,
+      "totalThreads" : 55,
+      "daemonThreads" : 47,
+      "containersCount" : 1
+    },
+    {
+      "t" : 9.542303,
+      "active" : 6,
+      "heapUsed" : 345,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.599,
+      "systemCpu" : 4.681,
+      "totalThreads" : 55,
+      "daemonThreads" : 47,
+      "containersCount" : 1
+    },
+    {
+      "t" : 9.805343,
+      "active" : 6,
+      "heapUsed" : 345,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.809,
+      "systemCpu" : 8.085,
+      "totalThreads" : 55,
+      "daemonThreads" : 47,
+      "containersCount" : 1
+    },
+    {
+      "t" : 10.065602,
+      "active" : 6,
+      "heapUsed" : 345,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.927,
+      "systemCpu" : 12.346,
+      "totalThreads" : 55,
+      "daemonThreads" : 47,
+      "containersCount" : 1
+    },
+    {
+      "t" : 10.321756,
+      "active" : 6,
+      "heapUsed" : 353,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.607,
+      "systemCpu" : 12.346,
+      "totalThreads" : 55,
+      "daemonThreads" : 47,
+      "containersCount" : 1
+    },
+    {
+      "t" : 10.582300,
+      "active" : 6,
+      "heapUsed" : 353,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.232,
+      "systemCpu" : 12.346,
+      "totalThreads" : 54,
+      "daemonThreads" : 46,
+      "containersCount" : 1
+    },
+    {
+      "t" : 10.841235,
+      "active" : 6,
+      "heapUsed" : 353,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.509,
+      "systemCpu" : 13.299,
+      "totalThreads" : 54,
+      "daemonThreads" : 46,
+      "containersCount" : 1
+    },
+    {
+      "t" : 11.104277,
+      "active" : 6,
+      "heapUsed" : 353,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.509,
+      "systemCpu" : 36.975,
+      "totalThreads" : 54,
+      "daemonThreads" : 46,
+      "containersCount" : 1
+    },
+    {
+      "t" : 11.364985,
+      "active" : 6,
+      "heapUsed" : 353,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.137,
+      "systemCpu" : 36.975,
+      "totalThreads" : 54,
+      "daemonThreads" : 46,
+      "containersCount" : 1
+    },
+    {
+      "t" : 11.629280,
+      "active" : 6,
+      "heapUsed" : 353,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.479,
+      "systemCpu" : 10.722,
+      "totalThreads" : 54,
+      "daemonThreads" : 46,
+      "containersCount" : 1
+    },
+    {
+      "t" : 11.886344,
+      "active" : 6,
+      "heapUsed" : 353,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.510,
+      "systemCpu" : 18.182,
+      "totalThreads" : 54,
+      "daemonThreads" : 46,
+      "containersCount" : 1
+    },
+    {
+      "t" : 12.147924,
+      "active" : 7,
+      "heapUsed" : 409,
+      "heapCommitted" : 632,
+      "gc" : true,
+      "processCpu" : 6.478,
+      "systemCpu" : 18.182,
+      "totalThreads" : 53,
+      "daemonThreads" : 45,
+      "containersCount" : 1
+    },
+    {
+      "t" : 12.408058,
+      "active" : 7,
+      "heapUsed" : 137,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 11.561,
+      "systemCpu" : 18.182,
+      "totalThreads" : 53,
+      "daemonThreads" : 42,
+      "containersCount" : 1
+    },
+    {
+      "t" : 12.664231,
+      "active" : 7,
+      "heapUsed" : 137,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 3.275,
+      "systemCpu" : 27.103,
+      "totalThreads" : 53,
+      "daemonThreads" : 42,
+      "containersCount" : 2
+    },
+    {
+      "t" : 12.926771,
+      "active" : 7,
+      "heapUsed" : 137,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.459,
+      "systemCpu" : 19.828,
+      "totalThreads" : 53,
+      "daemonThreads" : 42,
+      "containersCount" : 2
+    },
+    {
+      "t" : 13.189368,
+      "active" : 7,
+      "heapUsed" : 145,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.518,
+      "systemCpu" : 12.871,
+      "totalThreads" : 53,
+      "daemonThreads" : 42,
+      "containersCount" : 2
+    },
+    {
+      "t" : 13.450772,
+      "active" : 7,
+      "heapUsed" : 145,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.436,
+      "systemCpu" : 12.871,
+      "totalThreads" : 53,
+      "daemonThreads" : 42,
+      "containersCount" : 2
+    },
+    {
+      "t" : 13.709705,
+      "active" : 7,
+      "heapUsed" : 145,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.453,
+      "systemCpu" : 8.936,
+      "totalThreads" : 53,
+      "daemonThreads" : 42,
+      "containersCount" : 2
+    },
+    {
+      "t" : 13.973428,
+      "active" : 7,
+      "heapUsed" : 145,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 1.201,
+      "systemCpu" : 5.319,
+      "totalThreads" : 53,
+      "daemonThreads" : 42,
+      "containersCount" : 2
+    },
+    {
+      "t" : 14.235001,
+      "active" : 7,
+      "heapUsed" : 145,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.691,
+      "systemCpu" : 8.439,
+      "totalThreads" : 53,
+      "daemonThreads" : 42,
+      "containersCount" : 2
+    },
+    {
+      "t" : 14.498855,
+      "active" : 7,
+      "heapUsed" : 145,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 1.132,
+      "systemCpu" : 4.883,
+      "totalThreads" : 53,
+      "daemonThreads" : 42,
+      "containersCount" : 2
+    },
+    {
+      "t" : 14.762893,
+      "active" : 7,
+      "heapUsed" : 145,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.179,
+      "systemCpu" : 11.628,
+      "totalThreads" : 53,
+      "daemonThreads" : 42,
+      "containersCount" : 2
+    },
+    {
+      "t" : 15.020951,
+      "active" : 7,
+      "heapUsed" : 145,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.292,
+      "systemCpu" : 10.580,
+      "totalThreads" : 53,
+      "daemonThreads" : 42,
+      "containersCount" : 2
+    },
+    {
+      "t" : 15.279359,
+      "active" : 7,
+      "heapUsed" : 145,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.330,
+      "systemCpu" : 10.580,
+      "totalThreads" : 53,
+      "daemonThreads" : 42,
+      "containersCount" : 2
+    },
+    {
+      "t" : 15.537622,
+      "active" : 7,
+      "heapUsed" : 145,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.375,
+      "systemCpu" : 10.580,
+      "totalThreads" : 53,
+      "daemonThreads" : 42,
+      "containersCount" : 2
+    },
+    {
+      "t" : 15.794977,
+      "active" : 7,
+      "heapUsed" : 145,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.408,
+      "systemCpu" : 8.997,
+      "totalThreads" : 53,
+      "daemonThreads" : 42,
+      "containersCount" : 2
+    },
+    {
+      "t" : 16.064774,
+      "active" : 7,
+      "heapUsed" : 145,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.663,
+      "systemCpu" : 8.997,
+      "totalThreads" : 53,
+      "daemonThreads" : 42,
+      "containersCount" : 2
+    },
+    {
+      "t" : 16.328729,
+      "active" : 7,
+      "heapUsed" : 145,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.357,
+      "systemCpu" : 8.997,
+      "totalThreads" : 53,
+      "daemonThreads" : 42,
+      "containersCount" : 2
+    },
+    {
+      "t" : 16.593013,
+      "active" : 7,
+      "heapUsed" : 153,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.374,
+      "systemCpu" : 8.997,
+      "totalThreads" : 53,
+      "daemonThreads" : 42,
+      "containersCount" : 2
+    },
+    {
+      "t" : 16.853106,
+      "active" : 7,
+      "heapUsed" : 153,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 0.256,
+      "systemCpu" : 6.557,
+      "totalThreads" : 53,
+      "daemonThreads" : 42,
+      "containersCount" : 2
+    },
+    {
+      "t" : 17.113977,
+      "active" : 7,
+      "heapUsed" : 217,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 7.016,
+      "systemCpu" : 15.484,
+      "totalThreads" : 69,
+      "daemonThreads" : 58,
+      "containersCount" : 2
+    },
+    {
+      "t" : 17.375146,
+      "active" : 9,
+      "heapUsed" : 337,
+      "heapCommitted" : 632,
+      "gc" : true,
+      "processCpu" : 12.482,
+      "systemCpu" : 46.908,
+      "totalThreads" : 88,
+      "daemonThreads" : 74,
+      "containersCount" : 1
+    },
+    {
+      "t" : 17.636701,
+      "active" : 11,
+      "heapUsed" : 142,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 17.847,
+      "systemCpu" : 46.908,
+      "totalThreads" : 86,
+      "daemonThreads" : 72,
+      "containersCount" : 1
+    },
+    {
+      "t" : 17.816628,
+      "active" : 11,
+      "heapUsed" : 238,
+      "heapCommitted" : 632,
+      "gc" : false,
+      "processCpu" : 16.947,
+      "systemCpu" : 26.015,
+      "totalThreads" : 109,
+      "daemonThreads" : 92,
+      "containersCount" : 1
+    }
+  ]
+}</script>
+
+<script>
+    "use strict";
+    /* ====================== model ======================
+       The JSON records *instants* (Spring lifecycle events) but emits them as *intervals*:
+       every entry covers [previous event → this event] and is named after the event that
+       ENDS it. So the entry typed "paused" is the stretch during which the context was in
+       use, terminated by ContextPausedEvent. PHASE maps each terminating event onto what
+       the interval actually was; `key` drives color + legend, `ends` names the boundary. */
+    const PHASE = {
+        creating:   {key:"creating",   label:"Creating",    ends:"bean creation callback"},
+        started:    {key:"refreshing", label:"Starting",    ends:"ContextStartedEvent"},
+        refreshed:  {key:"refreshing", label:"Refreshing",  ends:"ContextRefreshedEvent"},
+        paused:     {key:"inuse",      label:"In use",      ends:"ContextPausedEvent"},
+        restarted:  {key:"paused",     label:"Paused",      ends:"ContextRestartedEvent"},
+        stopped:    {key:"inuse",      label:"In use",      ends:"ContextStoppedEvent"},
+        closed:     {key:"inuse",      label:"In use",      ends:"ContextClosedEvent"},
+        destroying: {key:"closing",    label:"Closing",     ends:"bean destruction callback"},
+        keep_alive: {key:"keepalive",  label:"Kept alive",  ends:"end of the test run"},
+    };
+    const UNKNOWN_PHASE = t => ({key:"inuse", label:t, ends:t});
+    const phaseOf = t => PHASE[t] || UNKNOWN_PHASE(t);
+
+    const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+    // fixed slot order, never cycled — a phase always wears the same hue
+    const PHASE_KEYS = ["creating","refreshing","inuse","paused","keepalive","closing"];
+    const PHASE_TITLE = {creating:"Creating",refreshing:"Refreshing / starting",inuse:"In use",
+        paused:"Paused",keepalive:"Kept alive",closing:"Closing"};
+    let PHASE_FILL = {};
+    function initPalette(){
+        PHASE_FILL = {creating:css("--ph-creating"), refreshing:css("--ph-refreshing"),
+            inuse:css("--ph-inuse"), paused:css("--ph-paused"), closing:css("--ph-closing"),
+            keepalive:css("--ph-keepalive")};
+    }
+    const isIdle = d => d.key === "keepalive";
+
+    let contexts=[], segs=[], metrics=[], N_LANES=0, T0=0, T1=1, META={};
+    const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    const simpleName=fqn=>{const s=String(fqn||"");const i=s.lastIndexOf(".");return i<0?s:s.slice(i+1);};
+
+    /* ====================== layout / shared scale ====================== */
+    const fmtTime=s=>{const m=Math.floor(s/60),sec=s-m*60;return m>0?`${m}m ${sec.toFixed(1)}s`:`${sec.toFixed(1)}s`;};
+    const fmtAxis=(s,dec=1)=>{const m=Math.floor(s/60),sec=s-m*60;const ss=+sec.toFixed(dec);return m>0?`${m}m ${ss}s`:`${ss}s`;};
+    // tick precision follows the visible span: at deep zoom — or on a sub-second test run —
+    // a fixed 0.1s rounding would print the same label on every tick.
+    const decFor=span=>Math.min(4,Math.max(1,Math.ceil(-Math.log10(Math.max(1e-9,span)/10))+1));
+    const fmtAxisZoomed=()=>{const d=xz.domain(), dec=decFor(d[1]-d[0]); return s=>fmtAxis(s,dec);};
+    // phase durations span orders of magnitude — a bean-destroy callback is sub-millisecond
+    // while "kept alive" runs for minutes. switch unit so two decimals stay meaningful.
+    const fmtDur=v=>v>=0.01?`${v.toFixed(2)}s`:v>=1e-5?`${(v*1e3).toFixed(2)}ms`:`${(v*1e6).toFixed(2)}µs`;
+
+    // left gutter is wider than the reference report's: lanes are named after the test class
+    // that triggered the context, not "worker-N". Every chart shares it so columns line up.
+    // M.left is resized by buildGantt() to fit the longest lane label (see fitGutter).
+    const M={left:172,right:18,top:8,bottom:18};
+    const GUTTER_MIN=172, GUTTER_MAX=360, GUTTER_MAX_FRAC=0.3, LABEL_PAD=14;
+    const width = () => document.getElementById("gantt").clientWidth || 1400;
+    const x = d3.scaleLinear().domain([T0,T1]);      // base scale; domain set after load, range per render
+    let xz = x;                                       // current (zoomed) scale, shared by all charts
+
+    const tip=d3.select("#tip");
+    function showTip(html,ev){tip.html(html).style("opacity",1);
+        // a tip with a multi-column class list gets an explicit width (shrink-to-fit
+        // doesn't size multicol content well), clamped to the viewport
+        const cls=tip.select(".classes").node(), cols=cls?+cls.dataset.cols:0;
+        tip.classed("wide",cols>1).style("width",cols>1?Math.min(cols*COL_W+18,innerWidth-16)+"px":null);
+        const pad=14,r=tip.node().getBoundingClientRect();
+        let X=ev.clientX+pad,Y=ev.clientY+pad;
+        if(X+r.width>innerWidth)X=ev.clientX-r.width-pad;
+        if(Y+r.height>innerHeight)Y=ev.clientY-r.height-pad;
+        X=Math.max(4,Math.min(X,innerWidth-r.width-4));
+        Y=Math.max(4,Math.min(Y,innerHeight-r.height-4));
+        tip.style("left",X+"px").style("top",Y+"px");}
+    const hideTip=()=>tip.style("opacity",0);
+
+    /* registry of focus charts so a zoom on one re-renders all */
+    const charts=[];
+    let INNERW=0;                 // shared inner pixel width (same for every chart)
+    let current=d3.zoomIdentity;  // single source of truth for the view transform
+    let suppress=false;           // re-entrancy guard between zoom <-> brush
+    let navMove=null;             // navigator's window setter, in timeline seconds
+    let navDraw=null;             // navigator's context redraw
+
+    // k=1 is "whole run visible" (the default view); k<1 zooms out past it, leaving slack —
+    // d3's default constrain() would center the run in that slack, we pin it left (tx=0)
+    // instead so t=0 always sits at the y-axis.
+    const K_MIN=0.5, K_MAX=20000;
+    const K_MAX_BRUSH=10000;        // navigator handles are coarse, so they zoom less deep
+    const clampTx=(tx,k,w)=>Math.max(Math.min(0,(1-k)*w), Math.min(0,tx));
+
+    function constrainLeft(t,extent){
+        const tx=clampTx(t.x,t.k,extent[1][0]-extent[0][0]);
+        const ty=clampTx(t.y,t.k,extent[1][1]-extent[0][1]);
+        return (tx===t.x&&ty===t.y) ? t : d3.zoomIdentity.translate(tx,ty).scale(t.k);
+    }
+    const zoom=d3.zoom().scaleExtent([K_MIN,K_MAX]).constrain(constrainLeft).on("zoom",onZoom);
+
+    function syncTransform(t){ d3.selectAll("svg .zoom-overlay").property("__zoom", t); }
+
+    function applyView(syncWindow){
+        syncTransform(current);
+        xz = current.rescaleX(x);
+        charts.forEach(c=>c.draw());
+        if(navDraw) navDraw();
+        if(syncWindow&&navMove){ suppress=true; navMove(xz.domain()); suppress=false; }
+    }
+
+    function onZoom(ev){
+        if(suppress) return;
+        current = ev.transform;
+        applyView(true);
+    }
+
+    function setView(t0,t1){
+        const px0=x(t0), px1=x(t1);
+        const k=Math.max(K_MIN, Math.min(K_MAX_BRUSH, INNERW/Math.max(1, px1-px0)));
+        current=d3.zoomIdentity.translate(clampTx(-k*px0,k,INNERW),0).scale(k);
+        applyView(false);
+    }
+
+    // trackpad two-finger horizontal swipe → pan; at k<=1 the whole run is visible and
+    // pinned left, so there is nothing to pan.
+    function panBy(dpx){
+        const k=current.k;
+        if(k<=1) return;
+        const tx=clampTx(current.x-dpx,k,INNERW);
+        if(tx===current.x) return;
+        current=d3.zoomIdentity.translate(tx,0).scale(k);
+        applyView(true);
+    }
+
+    function applyZoomBehavior(svg,innerW,innerH){
+        zoom.translateExtent([[0,0],[innerW,innerH]]).extent([[0,0],[innerW,innerH]]);
+        svg.select(".zoom-overlay").call(zoom).property("__zoom", current);
+    }
+
+    function resetZoom(){
+        current=d3.zoomIdentity;
+        applyView(true);
+    }
+
+    /* shared crosshair */
+    function moveCrosshair(tVal){
+        charts.forEach(c=>{
+            const px=xz(tVal);
+            const vis = tVal!=null && px>=0 && px<=c.innerW;
+            c.crosshair.attr("x1",px).attr("x2",px).style("opacity",vis?1:0);
+        });
+    }
+
+    // SVG has no text-overflow, so trim to the gutter by measuring the rendered run length
+    // an optional suffix (e.g. the reuse counter) is never trimmed
+    function fitLabel(node,full,maxPx,suffix=""){
+        node.textContent=full+suffix;
+        if(node.getComputedTextLength()<=maxPx) return;
+        let s=full;
+        while(s.length>1&&node.getComputedTextLength()>maxPx){ s=s.slice(0,-1); node.textContent=s+"…"+suffix; }
+    }
+
+    // the classes that used a context: the first one created it, the rest reused it from the
+    // Spring context cache. Nested classes (Outer$Inner) are grouped under their outer class,
+    // in the order of first use, and a long list flows into columns. Capped so a context shared
+    // by the whole suite keeps the tip on screen.
+    const MAX_TIP_CLASSES=80, COL_W=250;
+    const wrapCamel=s=>esc(s).replace(/([a-z0-9])([A-Z])/g,"$1<wbr>$2");
+    function usedByHtml(c){
+        const n=c.testClasses.length;
+        if(!n) return "";
+        const groups=new Map();
+        c.testClasses.slice(0,MAX_TIP_CLASSES).forEach(tc=>{
+            const s=simpleName(tc), i=s.indexOf("$");
+            const outer=i<0?s:s.slice(0,i);
+            let g=groups.get(outer);
+            if(!g) groups.set(outer,g={outer,self:false,nested:[]});
+            if(i<0) g.self=true; else g.nested.push(s.slice(i+1));
+        });
+        let items="", first=true;
+        groups.forEach(g=>{
+            // the outer class is dimmed when it only hosts the nested classes that used the context
+            items+=`<div>${first?"★":"·"} <span class="${g.self?"":"outer"}">${wrapCamel(g.outer)}</span>`
+                +(g.nested.length?` <span class="nested">› ${g.nested.map(wrapCamel).join(", ")}</span>`:"")+`</div>`;
+            first=false;
+        });
+        if(n>MAX_TIP_CLASSES) items+=`<div>… and ${n-MAX_TIP_CLASSES} more (see the context table)</div>`;
+        const rows=groups.size+(n>MAX_TIP_CLASSES?1:0);
+        const cols=rows>24?3:rows>8?2:1;
+        return `<br><span class="row">used by <b>${n}</b> test class${n===1?"":"es"}:</span>`
+            +`<div class="classes" data-cols="${cols}" style="column-count:${cols}">${items}</div>`;
+    }
+
+    const laneLabel=c=>`#${c.id} ${simpleName(c.testClass)}`;
+    const laneSuffix=c=>c.testClasses.length>1?` +${c.testClasses.length-1}`:"";
+
+    // widen the shared gutter to the longest untrimmed lane label, but never let it eat more
+    // than a fraction of the chart; anything longer is still trimmed by fitLabel
+    function fitGutter(svg,W){
+        const probe=svg.append("text").attr("class","lane-label");
+        let max=0;
+        contexts.forEach(c=>{probe.text(laneLabel(c)+laneSuffix(c));
+            max=Math.max(max,probe.node().getComputedTextLength());});
+        probe.remove();
+        M.left=Math.round(Math.max(GUTTER_MIN,Math.min(GUTTER_MAX,W*GUTTER_MAX_FRAC,max+LABEL_PAD+2)));
+    }
+
+    /* ====================== Gantt swimlanes ====================== */
+    function buildGantt(){
+        const W=width(), LANE_H=24, GAP=3;
+        fitGutter(d3.select("#gantt").html("").append("svg"),W);
+        const innerW=W-M.left-M.right, innerH=N_LANES*(LANE_H+GAP);
+        const H=innerH+M.top+M.bottom;
+        INNERW=innerW; x.range([0,innerW]);
+        const svg=d3.select("#gantt").html("").append("svg").attr("viewBox",`0 0 ${W} ${H}`).attr("height",H);
+        const g=svg.append("g").attr("transform",`translate(${M.left},${M.top})`);
+
+        const lanes=g.append("g");
+        const grid=g.append("g").attr("class","grid");
+        const xAxisG=g.append("g").attr("class","axis").attr("transform",`translate(0,${innerH})`);
+        const labels=g.append("g");
+        const bars=g.append("g").attr("clip-path","url(#clipG)");
+        const frame=g.append("rect").attr("class","ctx-frame");
+        const defs=svg.append("defs");
+        defs.append("clipPath").attr("id","clipG")
+            .append("rect").attr("width",innerW).attr("height",innerH);
+
+        // static lane backgrounds + labels: "#<contextId> <SimpleTestClassName> +<reusing classes>"
+        contexts.forEach((c,i)=>{
+            lanes.append("rect").attr("class","lane"+(i%2?" alt":"")).attr("x",0)
+                .attr("y",i*(LANE_H+GAP)).attr("width",innerW).attr("height",LANE_H);
+            const t=labels.append("text").attr("class","lane-label").attr("x",-8)
+                .attr("y",i*(LANE_H+GAP)+LANE_H/2+4).attr("text-anchor","end");
+            fitLabel(t.node(), laneLabel(c), M.left-LABEL_PAD, laneSuffix(c));
+            t.on("pointerenter",ev=>{ frameKey=c.lane; drawFrame();
+                    showTip(`<b>context #${esc(c.id)}</b>`+
+                        `<br><span class="row">created by ${esc(c.testClass)}</span>`+
+                        `<br><span class="row">alive: <b>${fmtTime(c.start)} → ${fmtTime(c.end)}</b> (${fmtDur(c.end-c.start)})</span>`+
+                        `<br><span class="row">worker-${c.thread+1}</span>`+
+                        usedByHtml(c),ev);})
+                .on("pointerleave",()=>{frameKey=null;drawFrame();hideTip();});
+        });
+
+        const crosshair=g.append("line").attr("class","crosshair").attr("y1",0).attr("y2",innerH);
+        g.append("rect").attr("class","zoom-overlay").attr("width",innerW).attr("height",innerH);
+
+        // lane currently framed (set by hover). kept as state so the frame survives
+        // zoom/pan re-renders, mirroring the crosshair/tooltip behavior.
+        let frameKey=null;
+        function drawFrame(){
+            labels.selectAll("text").classed("hl",(d,i)=>i===frameKey);
+            if(frameKey==null){frame.style("opacity",0);return;}
+            const c=contexts[frameKey];
+            const x0=Math.max(0,xz(c.start)), x1=Math.min(innerW,xz(c.end));
+            if(x1<=0||x0>=innerW){frame.style("opacity",0);return;}
+            frame.attr("x",x0).attr("y",frameKey*(LANE_H+GAP)-1)
+                .attr("width",Math.max(1,x1-x0)).attr("height",LANE_H+2)
+                .attr("rx",3).style("opacity",1);
+        }
+
+        function draw(){
+            xAxisG.call(d3.axisBottom(xz).ticks(10).tickFormat(fmtAxisZoomed()));
+            grid.call(d3.axisBottom(xz).ticks(10).tickSize(innerH).tickFormat(""))
+                .attr("transform",`translate(0,0)`).selectAll("text").remove();
+
+            const sel=bars.selectAll("g.seg").data(
+                segs.filter(d=>d.end>=xz.domain()[0]&&d.start<=xz.domain()[1]),
+                d=>d.uid);
+            sel.exit().remove();
+            const ent=sel.enter().append("g").attr("class","seg");
+            ent.append("rect");
+            ent.append("text");
+            const merged=ent.merge(sel);
+            // 1px surface gap between abutting phases once they are wide enough to spare it,
+            // so "creating|refreshing|in use" never reads as one block
+            const px0=d=>Math.max(0,xz(d.start));
+            const pxw=d=>{const w=Math.min(innerW,xz(d.end))-px0(d);return Math.max(1,w>4?w-1:w);};
+            merged.select("rect")
+                .attr("x",px0)
+                .attr("y",d=>d.lane*(LANE_H+GAP)+2)
+                .attr("width",pxw)
+                .attr("height",LANE_H-4)
+                .attr("fill",d=>PHASE_FILL[d.key])
+                .attr("stroke",d=>isIdle(d)?css("--ph-keepalive-edge"):null)
+                .attr("stroke-width",d=>isIdle(d)?1:null);
+            merged.select("text")
+                .attr("class",d=>isIdle(d)?"dark":null)
+                .attr("x",d=>px0(d)+5)
+                .attr("y",d=>d.lane*(LANE_H+GAP)+LANE_H/2+3.5)
+                // the lane label already names the context, so the spare room goes to the
+                // duration rather than to d.testClass — which for most phases is the class
+                // that *triggered the closing event*, not the context's own class
+                .text(d=>{const w=pxw(d);
+                    if(w<=46)return "";
+                    return w>150?`${d.label} · ${fmtDur(d.dur)}`:d.label;});
+            drawFrame();
+        }
+
+        svg.select(".zoom-overlay")
+            .on("pointermove.cross",ev=>{
+                const [px,py]=d3.pointer(ev);
+                moveCrosshair(xz.invert(px));
+                // hit-test the phase rectangle under the cursor (the overlay sits above the bars)
+                const lane=Math.floor(py/(LANE_H+GAP)), tm=xz.invert(px);
+                const hit=(lane>=0&&lane<N_LANES)?segs.find(d=>d.lane===lane&&d.start<=tm&&d.end>tm):null;
+                const key=hit?hit.lane:null;
+                if(key!==frameKey){ frameKey=key; drawFrame(); }
+                if(hit){
+                    // the event's own testClassName is the class that was running when the
+                    // closing event fired — for a pause/close that is the *next* test class,
+                    // not the one the context belongs to. Only worth showing when they differ.
+                    const own=contexts[hit.lane].testClass;
+                    showTip(
+                        `<b>context #${esc(hit.ctxId)} · ${esc(hit.label)}</b>`+
+                        `<br><span class="row">${esc(own)}</span>`+
+                        `<br><span class="row">start: <b>${fmtTime(hit.start)}</b></span>`+
+                        `<br><span class="row">duration: <b>${fmtDur(hit.dur)}</b></span>`+
+                        `<br><span class="row">ends with: <b>${esc(hit.ends)}</b></span>`+
+                        (hit.testClass&&hit.testClass!==own
+                            ? `<br><span class="row">triggered by: <b>${esc(simpleName(hit.testClass))}</b></span>`:"")+
+                        `<br><span class="row">worker-${hit.thread+1} · json type "<b>${esc(hit.type)}</b>"</span>`+
+                        usedByHtml(contexts[hit.lane]),ev);
+                }
+                else hideTip();
+            })
+            .on("pointerleave.cross",()=>{moveCrosshair(null);hideTip();frameKey=null;drawFrame();});
+        applyZoomBehavior(svg,innerW,innerH);
+        return {draw,crosshair,innerW};
+    }
+
+    /* ====================== metric chart ====================== */
+    function buildMetric(id,opts){
+        const W=width(), H=opts.height, innerW=W-M.left-M.right, innerH=H-M.top-M.bottom;
+        const svg=d3.select("#"+id).html("").append("svg").attr("viewBox",`0 0 ${W} ${H}`).attr("height",H);
+        const g=svg.append("g").attr("transform",`translate(${M.left},${M.top})`);
+        const yMax=opts.yMax ?? (d3.max(opts.series.flatMap(s=>metrics.map(m=>+m[s.key]||0)))||1)*1.1;
+        const y=d3.scaleLinear().domain([0,yMax]).range([innerH,0]).nice();
+
+        g.append("g").attr("class","grid")
+            .call(d3.axisLeft(y).ticks(2).tickSize(-innerW).tickFormat("")).select(".domain").remove();
+        g.append("g").attr("class","axis")
+            .call(d3.axisLeft(y).ticks(2).tickFormat(v=>(opts.fmtY?opts.fmtY(v):v)+(opts.unit||"")));
+        const xAxisG=g.append("g").attr("class","axis").attr("transform",`translate(0,${innerH})`);
+
+        const clipId="clip_"+id;
+        svg.append("defs").append("clipPath").attr("id",clipId).append("rect").attr("width",innerW).attr("height",innerH);
+        const plot=g.append("g").attr("clip-path",`url(#${clipId})`);
+        const gcLayer=plot.append("g");
+        const paths=opts.series.map(s=>plot.append("path")
+            .attr("fill",s.fill||s.color).attr("fill-opacity",s.fillOpacity??0.4)
+            .attr("stroke",s.color).attr("stroke-width",1.4));
+
+        const crosshair=g.append("line").attr("class","crosshair").attr("y1",0).attr("y2",innerH);
+        g.append("rect").attr("class","zoom-overlay").attr("width",innerW).attr("height",innerH);
+
+        const bisect=d3.bisector(m=>m.t).center;
+        function draw(){
+            xAxisG.call(d3.axisBottom(xz).ticks(10).tickFormat(fmtAxisZoomed()));
+            opts.series.forEach((s,i)=>{
+                const area=d3.area()
+                    .curve(opts.step?d3.curveStepAfter:d3.curveLinear)
+                    .x(m=>xz(m.t)).y0(innerH).y1(m=>y(+m[s.key]||0));
+                paths[i].attr("d",area(metrics));
+            });
+            if(opts.gcMarkers){
+                const gcs=gcLayer.selectAll("line").data(metrics.filter(m=>m.gc));
+                gcs.exit().remove();
+                gcs.enter().append("line").attr("y1",0).attr("y2",innerH)
+                    .attr("stroke","#9aa5b1").attr("stroke-width",1).attr("stroke-dasharray","2 3").attr("opacity",0.6)
+                    .merge(gcs).attr("x1",m=>xz(m.t)).attr("x2",m=>xz(m.t));
+            }
+        }
+
+        svg.select(".zoom-overlay")
+            .on("pointermove.cross",ev=>{
+                const px=d3.pointer(ev)[0], tVal=xz.invert(px);
+                moveCrosshair(tVal);
+                if(!metrics.length) return;
+                const m=metrics[Math.max(0,Math.min(metrics.length-1,bisect(metrics,tVal)))];
+                let rows=`<b>t = ${fmtTime(m.t)}</b>`;
+                opts.series.forEach(s=>rows+=`<br><span class="row">${s.label}: <b>${(opts.fmtY?opts.fmtY(m[s.key]):Math.round(m[s.key]))}${opts.unit||""}</b></span>`);
+                if(m.gc&&opts.gcMarkers)rows+=`<br><span class="row" style="color:#ffd479">⟳ GC pause</span>`;
+                showTip(rows,ev);
+            })
+            .on("pointerleave.cross",()=>{moveCrosshair(null);hideTip();});
+        applyZoomBehavior(svg,innerW,innerH);
+        return {draw,crosshair,innerW};
+    }
+
+    // series swatches next to the panel title: identity is never carried by color alone
+    function metricKeys(panelId,series){
+        const t=d3.select("#"+panelId+" .panel-title");
+        t.selectAll(".key").remove();
+        if(series.length<2) return;
+        series.forEach(s=>t.append("span").attr("class","key")
+            .html(`<i style="background:${s.fill||s.color}"></i>${esc(s.label)}`));
+    }
+
+    /* ====================== navigator (scroll / context brush) ====================== */
+    function buildNavigator(){
+        const W=width(), H=42, innerW=W-M.left-M.right, innerH=H-M.top-M.bottom;
+        const svg=d3.select("#nav").html("").append("svg").attr("viewBox",`0 0 ${W} ${H}`).attr("height",H);
+        const g=svg.append("g").attr("transform",`translate(${M.left},${M.top})`);
+
+        // faint context: live-context count across the whole run, so the scrollbar has reference
+        const yMax=d3.max(metrics,m=>m.active)||1;
+        const y=d3.scaleLinear().domain([0,yMax]).range([innerH,0]);
+        const xn=d3.scaleLinear().domain([T0,T1]).range([0,innerW]);
+        const area=d3.area().curve(d3.curveStepAfter).x(m=>xn(m.t)).y0(innerH).y1(m=>y(m.active));
+        const areaPath=g.append("path").attr("class","nav-area").attr("fill-opacity",0.7);
+        const axisG=g.append("g").attr("class","axis").attr("transform",`translate(0,${innerH})`);
+
+        // a brush gesture changes k, which would rescale the context mid-drag and make the
+        // handle chase its own tail; freeze the context for the gesture, resync on release.
+        let frozen=null;
+        function draw(){
+            if(frozen) return;
+            xn.range([0, innerW*Math.min(1,current.k)]);
+            areaPath.attr("d",area(metrics));
+            // the navigator always shows the whole run, so its precision is fixed by T1-T0
+            axisG.call(d3.axisBottom(xn).ticks(10).tickFormat(s=>fmtAxis(s,decFor(T1-T0))));
+        }
+
+        const brush=d3.brushX().extent([[0,0],[innerW,innerH]]).on("start brush end",ev=>{
+            if(suppress) return;
+            if(ev.type==="start"){ frozen=xn.copy(); return; }
+            const sx=frozen||xn;
+            if(ev.selection) setView(sx.invert(ev.selection[0]), sx.invert(ev.selection[1]));
+            else if(ev.type==="end") setView(T0,T1);
+            if(ev.type==="end"){ frozen=null; draw(); suppress=true; navMove(xz.domain()); suppress=false; }
+        });
+        const brushG=g.append("g").attr("class","brush").call(brush);
+        navMove = dom => brushG.call(brush.move,
+            [Math.max(0,xn(dom[0])), Math.min(innerW,xn(dom[1]))]);
+        navDraw = draw;
+        draw();
+        navMove(x.domain());   // start fully zoomed-out
+    }
+
+    /* ====================== legend ====================== */
+    function buildLegend(){
+        const legend=d3.select("#legend").html("");
+        PHASE_KEYS.forEach(k=>{
+            const border = k==="keepalive" ? `;border:1px solid ${css("--ph-keepalive-edge")}` : "";
+            legend.append("span").html(`<i style="background:${PHASE_FILL[k]}${border}"></i>${PHASE_TITLE[k]}`);
+        });
+        legend.append("span").style("opacity",.85)
+            .html(`<span title="each bar spans [previous event → this event]">each bar ends at the Spring event that closes it</span>`);
+    }
+
+    /* ====================== context table (accessibility relief + the numbers) ====================== */
+    function buildTable(){
+        const byKey=c=>{const o={};c.events.forEach(e=>{o[e.key]=(o[e.key]||0)+e.dur;});return o;};
+        const cols=["creating","refreshing","inuse","paused","keepalive","closing"];
+        let html=`<thead><tr><th class="l">#</th><th class="l">Test class</th><th>Used by</th><th>Created</th>`
+            +cols.map(k=>`<th>${PHASE_TITLE[k]}</th>`).join("")
+            +`<th>Alive</th><th class="l">Final state</th></tr></thead><tbody>`;
+        contexts.forEach(c=>{
+            const s=byKey(c);
+            const last=c.events[c.events.length-1];
+            const fin=last?(last.type==="keep_alive"?"kept alive at exit":`${last.label} → ${last.ends}`):"—";
+            const n=c.testClasses.length;
+            // the cell tooltip lists the full class names, the reusing ones in the order of first use
+            html+=`<tr><td class="l">#${esc(c.id)}</td><td class="l">${esc(c.testClass)}</td>`
+                +`<td class="${n>1?"":"dim"}" title="${esc(c.testClasses.join("\n"))}">${n} class${n===1?"":"es"}</td>`
+                +`<td>${fmtTime(c.start)}</td>`
+                +cols.map(k=>`<td class="${s[k]?"":"dim"}">${s[k]?fmtDur(s[k]):"–"}</td>`).join("")
+                +`<td>${fmtDur(c.end-c.start)}</td><td class="l dim">${esc(fin)}</td></tr>`;
+        });
+        d3.select("#ctxTable").html(html+"</tbody>");
+    }
+
+    /* ====================== build & wire ====================== */
+    function buildAll(){
+        charts.length=0; current=d3.zoomIdentity; xz=x; navMove=null; navDraw=null;
+        charts.push(buildGantt());
+
+        const ctxSeries=[{key:"active",label:"live contexts",color:"#2f8f6b",fill:"#46b289",fillOpacity:0.4}];
+        charts.push(buildMetric("ctxcount",{height:64,step:true,fmtY:Math.round,
+            yMax:(d3.max(metrics,m=>m.active)||1)+1,series:ctxSeries}));
+
+        const heapSeries=[
+            {key:"heapCommitted",label:"committed",color:"#c0c7d1",fill:"#c0c7d1",fillOpacity:0.5},
+            {key:"heapUsed",label:"used",color:"#b54a3a",fill:"#c46352",fillOpacity:0.55}];
+        charts.push(buildMetric("heap",{height:74,unit:" MB",gcMarkers:true,fmtY:Math.round,series:heapSeries}));
+
+        // daemon threads are a subset of the total, so the total is drawn first as the wider
+        // backdrop and the daemon area nests inside it (same idiom as heap used/committed)
+        const threadSeries=[
+            {key:"totalThreads",label:"total",color:"#7c9fe8",fill:"#a8c1f2",fillOpacity:0.45},
+            {key:"daemonThreads",label:"daemon",color:"#2f6fed",fill:"#5b8def",fillOpacity:0.5}];
+        charts.push(buildMetric("threads",{height:64,series:threadSeries}));
+
+        const cpuSeries=[
+            {key:"systemCpu",label:"system",color:"#a0863a",fill:"#d8b85a",fillOpacity:0.35},
+            {key:"processCpu",label:"process",color:"#444b53",fill:"#6b7480",fillOpacity:0.5}];
+        charts.push(buildMetric("cpu",{height:64,unit:"%",yMax:100,series:cpuSeries}));
+
+        // containersCount is null unless Testcontainers is on the classpath — hide the panel
+        // rather than show an empty axis
+        const hasContainers=metrics.some(m=>m.containersCount!=null);
+        d3.select("#panel-containers").classed("hidden",!hasContainers);
+        if(hasContainers){
+            const cSeries=[{key:"containersCount",label:"containers",color:"#8a5aa8",fill:"#b07cc6",fillOpacity:0.4}];
+            charts.push(buildMetric("containers",{height:64,step:true,fmtY:Math.round,
+                yMax:(d3.max(metrics,m=>+m.containersCount||0)||1)+1,series:cSeries}));
+            metricKeys("panel-containers",cSeries);
+        }
+
+        metricKeys("panel-contexts",ctxSeries);
+        metricKeys("panel-heap",heapSeries);
+        metricKeys("panel-threads",threadSeries);
+        metricKeys("panel-cpu",cpuSeries);
+        charts.forEach(c=>c.draw());
+        buildNavigator();
+    }
+    d3.select("#resetZoom").on("click",resetZoom);
+    let rt;addEventListener("resize",()=>{clearTimeout(rt);rt=setTimeout(()=>{xz=x;buildAll();},150);});
+
+    // trackpad two-finger horizontal swipe → pan the timeline left/right. captured before
+    // d3.zoom's wheel handler (bubble phase, on the overlay) so a dominant deltaX is never
+    // misread as a zoom; vertical wheels and pinch (ctrlKey) fall through to d3.zoom.
+    addEventListener("wheel",ev=>{
+        if(ev.ctrlKey) return;
+        if(!ev.target.closest||!ev.target.closest(".zoom-overlay")) return;
+        if(Math.abs(ev.deltaX)<=Math.abs(ev.deltaY)) return;
+        ev.preventDefault(); ev.stopPropagation();
+        panBy(ev.deltaX);
+    },{capture:true,passive:false});
+
+    /* ====================== load data & render ====================== */
+    function ingest(data){
+        initPalette();
+        META    = data.meta || {};
+        metrics = (data.metrics||[]).slice().sort((a,b)=>a.t-b.t);
+
+        contexts = (data.contexts||[]).map((c,lane)=>{
+            const evs=(c.events||[]).map((e,i)=>{
+                const p=phaseOf(e.type);
+                return {uid:c.contextId+"#"+i, lane, ctxId:c.contextId, type:e.type,
+                    key:p.key, label:p.label, ends:p.ends,
+                    start:+e.start, end:+e.end, dur:e.duration!=null?+e.duration:(+e.end-+e.start),
+                    thread:e.threadId|0, testClass:e.testClassName||""};
+            });
+            const testClass=evs.length?evs[0].testClass:"";
+            // testClassNames is absent in reports of older versions — fall back to the creator
+            const testClasses=(c.testClassNames&&c.testClassNames.length)?c.testClassNames.slice()
+                :(testClass?[testClass]:[]);
+            return {id:c.contextId, lane, events:evs,
+                testClass: testClasses.length?testClasses[0]:testClass,
+                testClasses,
+                thread: evs.length?evs[0].thread:0,
+                start: evs.length?evs[0].start:0,
+                end: evs.length?evs[evs.length-1].end:0};
+        });
+        segs=contexts.flatMap(c=>c.events);
+
+        N_LANES=Math.max(1,contexts.length);
+        T0=0;
+        T1=META.duration!=null?+META.duration:(d3.max(segs,d=>d.end)||1);
+        x.domain([T0,T1]);
+
+        const kept=contexts.filter(c=>c.events.some(e=>e.type==="keep_alive")).length;
+        const closed=contexts.filter(c=>c.events.some(e=>e.type==="destroying")).length;
+        const nClasses=new Set(contexts.flatMap(c=>c.testClasses).filter(Boolean)).size;
+        const threads=META.threads??1;
+        d3.select("#headline").text(
+            `${contexts.length} Spring context${contexts.length===1?"":"s"} across ${nClasses} test class${nClasses===1?"":"es"} in ${fmtTime(T1)}`);
+        d3.select("#subline").text(
+            `${threads} worker thread${threads===1?"":"s"} · ${kept} kept alive at exit · ${closed} closed`);
+
+        buildLegend();
+        buildTable();
+        buildAll();
+    }
+
+    // Prefer data inlined into this file (self-contained report); a real JSON object starts
+    // with "{", whereas the unreplaced placeholder token does not. Otherwise fall back to
+    // fetching the sibling spring-test-timeline.json.
+    const inlineEl = document.getElementById("timelineData");
+    const inline = inlineEl ? inlineEl.textContent.trim() : "";
+    if (inline.charAt(0) === "{") {
+        ingest(JSON.parse(inline));
+    } else {
+        d3.json("spring-test-timeline.json")
+            .then(ingest)
+            .catch(err=>{
+                d3.select("#headline").text("Could not load spring-test-timeline.json");
+                d3.select("#subline").html(
+                    `Serve this report over HTTP (e.g. <code>python3 -m http.server</code>) — `+
+                    `browsers block fetch() on file:// URLs. `+
+                    `<span style="color:#b54a3a">${err}</span>`);
+                console.error(err);
+            });
+    }
+</script>
+</body>
+</html>
