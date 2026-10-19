@@ -20,11 +20,9 @@ public abstract class EventTrackerSupport {
     public static final String REPORT_DIR_PROPERTY = "springTestTimelineReportDir";
 
     /**
-     * Both reports are written to the build output directory ({@code target/} for Maven, {@code build/} for Gradle)
-     * or the one defined via {@link #REPORT_DIR_PROPERTY}. The HTML report inlines the JSON, but the JSON is kept as
-     * a separate machine-readable artifact.
+     * The report is written to the build output directory ({@code target/} for Maven, {@code build/} for Gradle)
+     * or the one defined via {@link #REPORT_DIR_PROPERTY}. The HTML report inlines the JSON data.
      */
-    private static final String JSON_REPORT_FILE_NAME = "spring-test-timeline.json";
     private static final String HTML_REPORT_FILE_NAME = "spring-test-timeline.html";
 
     /**
@@ -63,19 +61,15 @@ public abstract class EventTrackerSupport {
             }
 
             TimelineReportData report = timelineHelper.generateReport();
-            File jsonFile = new File(reportDir, JSON_REPORT_FILE_NAME);
-            byte[] reportData = JsonSerializers.serialize(report);
-            MoreFileUtils.write(jsonFile, reportData);
-
             // the HTML report is a diagnostic artifact: a failure to render it should never
             // fail the test run that just succeeded
             try {
+                byte[] reportData = JsonSerializers.serialize(report);
                 File htmlFile = new File(reportDir, HTML_REPORT_FILE_NAME);
                 MoreFileUtils.write(htmlFile, TimelineHtmlReport.render(reportData));
                 logger.info("Spring test timeline report: {}", htmlFile.getAbsolutePath());
             } catch (RuntimeException e) {
-                logger.warn("Failed to generate {}, the raw data is in {}", HTML_REPORT_FILE_NAME,
-                    jsonFile.getAbsolutePath(), e);
+                logger.warn("Failed to generate {}", HTML_REPORT_FILE_NAME, e);
             }
         }
     }

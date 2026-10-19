@@ -141,9 +141,7 @@
 <div class="tip" id="tip"></div>
 
 <!-- Timeline data. TimelineHtmlReport substitutes the placeholder token below with the
-     contents of spring-test-timeline.json, producing a self-contained single-file report.
-     If this file is opened as the raw template (token not substituted) the loader falls
-     back to fetching spring-test-timeline.json next to this page. -->
+     report JSON, producing a self-contained single-file report. -->
 <script id="timelineData" type="application/json">__SPRING_TEST_TIMELINE_JSON__</script>
 
 <script>
@@ -718,24 +716,14 @@
         buildAll();
     }
 
-    // Prefer data inlined into this file (self-contained report); a real JSON object starts
-    // with "{", whereas the unreplaced placeholder token does not. Otherwise fall back to
-    // fetching the sibling spring-test-timeline.json.
+    // The data is inlined into this file (self-contained report); a real JSON object starts
+    // with "{", whereas the unreplaced placeholder token does not.
     const inlineEl = document.getElementById("timelineData");
     const inline = inlineEl ? inlineEl.textContent.trim() : "";
     if (inline.charAt(0) === "{") {
         ingest(JSON.parse(inline));
     } else {
-        d3.json("spring-test-timeline.json")
-            .then(ingest)
-            .catch(err=>{
-                d3.select("#headline").text("Could not load spring-test-timeline.json");
-                d3.select("#subline").html(
-                    `Serve this report over HTTP (e.g. <code>python3 -m http.server</code>) — `+
-                    `browsers block fetch() on file:// URLs. `+
-                    `<span style="color:#b54a3a">${err}</span>`);
-                console.error(err);
-            });
+        d3.select("#headline").text("No timeline data in this report");
     }
 </script>
 </body>

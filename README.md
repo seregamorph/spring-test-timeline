@@ -27,10 +27,10 @@ Sample report for [spring-petclinic](https://github.com/spring-projects/spring-p
 
 ## Configuring
 
-When the tests finish, `spring-test-timeline.html` and `spring-test-timeline.json` are written to the build output directory:
-`target/` for Maven or `build/` for Gradle.
+When the tests finish, `spring-test-timeline.html` is written to the build output directory: `target/` for Maven or
+`build/` for Gradle.
 
-To write them to another directory, set the `springTestTimelineReportDir` system property on the test JVM. A relative
+To write it to another directory, set the `springTestTimelineReportDir` system property on the test JVM. A relative
 path resolves against the test JVM's working directory.
 
 Maven (Surefire/Failsafe):

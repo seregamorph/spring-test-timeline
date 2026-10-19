@@ -9,11 +9,10 @@ https://github.com/seregamorph/spring-test-timeline
 ## What it does
 
 On the test classpath it records the lifecycle of every Spring test `ApplicationContext` (creating, refreshed, closed,
-destroying), which test classes used each context, and JVM metrics. When the test JVM finishes it writes:
-
-- `spring-test-timeline.html`: a standalone interactive report (D3 is loaded from a CDN, so it needs internet access
-  to render);
-- `spring-test-timeline.json`: the same data, machine-readable. Prefer it for analysis.
+destroying), which test classes used each context, and JVM metrics. When the test JVM finishes it writes
+`spring-test-timeline.html`: a standalone interactive report (D3 is loaded from a CDN, so it needs internet access to
+render). The raw data is inlined in it as JSON, inside `<script id="timelineData" type="application/json">`. Extract it
+from there for analysis (`</` is escaped as `<\/`, which is still valid JSON).
 
 It needs no code changes and no annotations: everything is registered automatically, as listed below.
 
@@ -23,7 +22,7 @@ The only setting is a system property **of the test JVM** (not of Maven/Gradle i
 
 | System property               | Default                    | Meaning                                                      |
 |-------------------------------|----------------------------|--------------------------------------------------------------|
-| `springTestTimelineReportDir` | `target/` or `build/`, see below | Directory for both report files. A relative path resolves against the test JVM's working directory. Created if missing. |
+| `springTestTimelineReportDir` | `target/` or `build/`, see below | Directory for the report file. A relative path resolves against the test JVM's working directory. Created if missing. |
 
 How the default directory is chosen:
 
@@ -55,8 +54,7 @@ dependency (for example, put it in an opt-in Maven profile).
   - `timelineHelper not initialized` (WARN): the suite start callback never ran. Tests must run through the JUnit
     Platform launcher (1.8+, which has `LauncherSessionListener`) or through TestNG with its `ServiceLoader` listeners
     enabled. A custom launcher or a disabled `ServiceLoader` lookup prevents this.
-  - `Failed to generate spring-test-timeline.html` (WARN): only the HTML failed. The JSON is still there, and the test
-    run is not failed.
+  - `Failed to generate spring-test-timeline.html` (WARN): the report failed, but the test run is not failed.
 - **Stdout lines** `SuiteLauncherSessionListener.launcherSessionOpened/Closed` and
   `TimelineExecutionListener.onExecutionStart/Finish` come from this library, not from the project.
 - **Log noise.** It logs one INFO line per context event (`Initializing context for test class ...`,
@@ -101,7 +99,7 @@ and the TestNG discovery (dry-run) phase is ignored.
 - Spring, JUnit Platform/Jupiter, TestNG and Testcontainers are `provided`: the project supplies them, and any subset
   works. The jar's own dependencies are `slf4j-api` and `jackson-databind`.
 
-## Reading the JSON report
+## Reading the report JSON
 
 ```
 meta:     { threads, duration, contexts }  // duration in seconds; threads = number of worker threads seen

@@ -38,7 +38,7 @@ Three cooperating pieces, all static/thread-local state shared within one test J
    - When TestNG runs through the JUnit Platform `testng-engine`, both fire. A depth counter in `EventTrackerSupport`
      makes only the outermost start/finish pair count. TestNG callbacks also skip `RuntimeBehavior.isDryRun()` (the
      discovery phase under testng-engine).
-   - On finish it writes `spring-test-timeline.json` and `spring-test-timeline.html` to the directory given by the
+   - On finish it writes `spring-test-timeline.html` (with the report JSON inlined) to the directory given by the
      `-DspringTestTimelineReportDir` system property, or else to `target/` for Maven (`pom.xml` in the `basedir`
      property or the working directory) or `build/` for Gradle (`org.gradle.test.worker` property or
      `build.gradle[.kts]` in the working directory). If neither build is recognized, the report is skipped and an
