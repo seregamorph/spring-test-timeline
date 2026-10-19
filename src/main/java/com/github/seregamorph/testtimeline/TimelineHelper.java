@@ -38,11 +38,18 @@ class TimelineHelper {
         private final String createdTestClassName;
 
         private final List<Event> events = new ArrayList<>();
+        /**
+         * All test classes that used this context (in the order of the first usage), the creator goes first
+         */
+        private final Set<String> testClassNames = new LinkedHashSet<>();
 
-        ContextState(long createdNanos, int createdThreadId, String createdTestClassName) {
+        ContextState(long createdNanos, int createdThreadId, Class<?> createdTestClass) {
             this.createdNanos = createdNanos;
             this.createdThreadId = createdThreadId;
-            this.createdTestClassName = createdTestClassName;
+            this.createdTestClassName = createdTestClass.getName();
+            if (createdTestClass != UndefinedTestClass.class) {
+                testClassNames.add(createdTestClassName);
+            }
         }
     }
 
@@ -78,9 +85,24 @@ class TimelineHelper {
         Class<?> currentTestClass = getCurrentTestClass();
         synchronized (contextStates) {
             contextStates.computeIfAbsent(contextId,
-                $ -> new ContextState(System.nanoTime(), currentWorkerThreadId.get(), currentTestClass.getName()));
+                $ -> new ContextState(System.nanoTime(), currentWorkerThreadId.get(), currentTestClass));
         }
         log.info("Initializing context for test class {}", currentTestClass.getName());
+    }
+
+    /**
+     * Called for each test class (possibly several times) that uses the context, either created or reused from the
+     * Spring context cache
+     */
+    void contextUsed(String contextId, String testClassName) {
+        synchronized (contextStates) {
+            ContextState contextState = contextStates.get(contextId);
+            if (contextState == null) {
+                log.warn("Missing ContextState for context {}", contextId);
+            } else {
+                contextState.testClassNames.add(testClassName);
+            }
+        }
     }
 
     void addEvent(String contextId, ContextEventType eventType) {
@@ -149,7 +171,8 @@ class TimelineHelper {
                         contextState.createdTestClassName,
                         fromStartSec(prevEventTimestampNanos), fromStartSec(now)));
                 }
-                TimelineReportData.ContextData contextData = new TimelineReportData.ContextData(contextId, contextEvents);
+                TimelineReportData.ContextData contextData = new TimelineReportData.ContextData(contextId,
+                    new ArrayList<>(contextState.testClassNames), contextEvents);
                 contexts.add(contextData);
             });
             return new TimelineReportData(meta, contexts, metrics);

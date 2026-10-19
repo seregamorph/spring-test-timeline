@@ -116,6 +116,14 @@ public abstract class EventTrackerSupport {
         timelineHelper.contextInitializing(contextId);
     }
 
+    static void contextUsed(String contextId, String testClassName) {
+        if (timelineHelper == null) {
+            logger.warn("timelineHelper not initialized");
+            return;
+        }
+        timelineHelper.contextUsed(contextId, testClassName);
+    }
+
     static void trackEvent(String contextId, ContextEventType eventType) {
         if (timelineHelper == null) {
             logger.warn("timelineHelper not initialized");

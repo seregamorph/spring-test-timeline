@@ -14,6 +14,10 @@ public class SpringLifecycleTrackingBean implements InitializingBean, Disposable
         this.contextId = contextId;
     }
 
+    String getContextId() {
+        return contextId;
+    }
+
     @Override
     public void afterPropertiesSet() throws Exception {
         onContextCreating();

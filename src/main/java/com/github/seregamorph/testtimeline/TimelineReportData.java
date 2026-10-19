@@ -60,15 +60,24 @@ public final class TimelineReportData {
     public static final class ContextData {
 
         private final String contextId;
+        /**
+         * All test classes that used the context, the first one created it, the others reused it from the cache
+         */
+        private final List<String> testClassNames;
         private final List<ContextEvent> events;
 
-        public ContextData(String contextId, List<ContextEvent> events) {
+        public ContextData(String contextId, List<String> testClassNames, List<ContextEvent> events) {
             this.contextId = contextId;
+            this.testClassNames = testClassNames;
             this.events = events;
         }
 
         public String getContextId() {
             return contextId;
+        }
+
+        public List<String> getTestClassNames() {
+            return testClassNames;
         }
 
         public List<ContextEvent> getEvents() {

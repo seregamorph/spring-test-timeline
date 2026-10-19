@@ -282,11 +282,26 @@
     }
 
     // SVG has no text-overflow, so trim to the gutter by measuring the rendered run length
-    function fitLabel(node,full,maxPx){
-        node.textContent=full;
+    // an optional suffix (e.g. the reuse counter) is never trimmed
+    function fitLabel(node,full,maxPx,suffix=""){
+        node.textContent=full+suffix;
         if(node.getComputedTextLength()<=maxPx) return;
         let s=full;
-        while(s.length>1&&node.getComputedTextLength()>maxPx){ s=s.slice(0,-1); node.textContent=s+"…"; }
+        while(s.length>1&&node.getComputedTextLength()>maxPx){ s=s.slice(0,-1); node.textContent=s+"…"+suffix; }
+    }
+
+    // the classes that used a context: the first one created it, the rest reused it from the
+    // Spring context cache. Capped so a context shared by the whole suite keeps the tip on screen.
+    const MAX_TIP_CLASSES=30;
+    function usedByHtml(c){
+        const n=c.testClasses.length;
+        if(!n) return "";
+        let html=`<br><span class="row">used by <b>${n}</b> test class${n===1?"":"es"}:</span>`;
+        c.testClasses.slice(0,MAX_TIP_CLASSES).forEach((tc,i)=>{
+            html+=`<br><span class="row">&nbsp;&nbsp;${i===0?"★":"·"} ${esc(simpleName(tc))}</span>`;
+        });
+        if(n>MAX_TIP_CLASSES) html+=`<br><span class="row">&nbsp;&nbsp;… and ${n-MAX_TIP_CLASSES} more (see the context table)</span>`;
+        return html;
     }
 
     /* ====================== Gantt swimlanes ====================== */
@@ -308,18 +323,20 @@
         defs.append("clipPath").attr("id","clipG")
             .append("rect").attr("width",innerW).attr("height",innerH);
 
-        // static lane backgrounds + labels: "#<contextId> <SimpleTestClassName>"
+        // static lane backgrounds + labels: "#<contextId> <SimpleTestClassName> +<reusing classes>"
         contexts.forEach((c,i)=>{
             lanes.append("rect").attr("class","lane"+(i%2?" alt":"")).attr("x",0)
                 .attr("y",i*(LANE_H+GAP)).attr("width",innerW).attr("height",LANE_H);
             const t=labels.append("text").attr("class","lane-label").attr("x",-8)
                 .attr("y",i*(LANE_H+GAP)+LANE_H/2+4).attr("text-anchor","end");
-            fitLabel(t.node(), `#${c.id} ${simpleName(c.testClass)}`, M.left-14);
+            const reused=c.testClasses.length-1;
+            fitLabel(t.node(), `#${c.id} ${simpleName(c.testClass)}`, M.left-14, reused>0?` +${reused}`:"");
             t.on("pointerenter",ev=>{ frameKey=c.lane; drawFrame();
                     showTip(`<b>context #${esc(c.id)}</b>`+
-                        `<br><span class="row">${esc(c.testClass)}</span>`+
+                        `<br><span class="row">created by ${esc(c.testClass)}</span>`+
                         `<br><span class="row">alive: <b>${fmtTime(c.start)} → ${fmtTime(c.end)}</b> (${fmtDur(c.end-c.start)})</span>`+
-                        `<br><span class="row">worker-${c.thread+1}</span>`,ev);})
+                        `<br><span class="row">worker-${c.thread+1}</span>`+
+                        usedByHtml(c),ev);})
                 .on("pointerleave",()=>{frameKey=null;drawFrame();hideTip();});
         });
 
@@ -400,7 +417,8 @@
                         `<br><span class="row">ends with: <b>${esc(hit.ends)}</b></span>`+
                         (hit.testClass&&hit.testClass!==own
                             ? `<br><span class="row">triggered by: <b>${esc(simpleName(hit.testClass))}</b></span>`:"")+
-                        `<br><span class="row">worker-${hit.thread+1} · json type "<b>${esc(hit.type)}</b>"</span>`,ev);
+                        `<br><span class="row">worker-${hit.thread+1} · json type "<b>${esc(hit.type)}</b>"</span>`+
+                        usedByHtml(contexts[hit.lane]),ev);
                 }
                 else hideTip();
             })
@@ -533,14 +551,17 @@
     function buildTable(){
         const byKey=c=>{const o={};c.events.forEach(e=>{o[e.key]=(o[e.key]||0)+e.dur;});return o;};
         const cols=["creating","refreshing","inuse","paused","keepalive","closing"];
-        let html=`<thead><tr><th class="l">#</th><th class="l">Test class</th><th>Created</th>`
+        let html=`<thead><tr><th class="l">#</th><th class="l">Test class</th><th>Used by</th><th>Created</th>`
             +cols.map(k=>`<th>${PHASE_TITLE[k]}</th>`).join("")
             +`<th>Alive</th><th class="l">Final state</th></tr></thead><tbody>`;
         contexts.forEach(c=>{
             const s=byKey(c);
             const last=c.events[c.events.length-1];
             const fin=last?(last.type==="keep_alive"?"kept alive at exit":`${last.label} → ${last.ends}`):"—";
+            const n=c.testClasses.length;
+            // the cell tooltip lists the full class names, the reusing ones in the order of first use
             html+=`<tr><td class="l">#${esc(c.id)}</td><td class="l">${esc(c.testClass)}</td>`
+                +`<td class="${n>1?"":"dim"}" title="${esc(c.testClasses.join("\n"))}">${n} class${n===1?"":"es"}</td>`
                 +`<td>${fmtTime(c.start)}</td>`
                 +cols.map(k=>`<td class="${s[k]?"":"dim"}">${s[k]?fmtDur(s[k]):"–"}</td>`).join("")
                 +`<td>${fmtDur(c.end-c.start)}</td><td class="l dim">${esc(fin)}</td></tr>`;
@@ -620,8 +641,13 @@
                     start:+e.start, end:+e.end, dur:e.duration!=null?+e.duration:(+e.end-+e.start),
                     thread:e.threadId|0, testClass:e.testClassName||""};
             });
+            const testClass=evs.length?evs[0].testClass:"";
+            // testClassNames is absent in reports of older versions — fall back to the creator
+            const testClasses=(c.testClassNames&&c.testClassNames.length)?c.testClassNames.slice()
+                :(testClass?[testClass]:[]);
             return {id:c.contextId, lane, events:evs,
-                testClass: evs.length?evs[0].testClass:"",
+                testClass: testClasses.length?testClasses[0]:testClass,
+                testClasses,
                 thread: evs.length?evs[0].thread:0,
                 start: evs.length?evs[0].start:0,
                 end: evs.length?evs[evs.length-1].end:0};
@@ -635,7 +661,7 @@
 
         const kept=contexts.filter(c=>c.events.some(e=>e.type==="keep_alive")).length;
         const closed=contexts.filter(c=>c.events.some(e=>e.type==="destroying")).length;
-        const nClasses=new Set(segs.map(s=>s.testClass).filter(Boolean)).size;
+        const nClasses=new Set(contexts.flatMap(c=>c.testClasses).filter(Boolean)).size;
         const threads=META.threads??1;
         d3.select("#headline").text(
             `${contexts.length} Spring context${contexts.length===1?"":"s"} across ${nClasses} test class${nClasses===1?"":"es"} in ${fmtTime(T1)}`);

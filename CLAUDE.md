@@ -60,6 +60,13 @@ Three cooperating pieces, all static/thread-local state shared within one test J
    - registers a `SpringLifecycleTrackingBean` infrastructure bean before the application beans. Its
      `afterPropertiesSet` and `destroy` mark CREATING and DESTROYING, and because it is destroyed last, DESTROYING marks
      the moment the context is fully torn down.
+   - adds a `SpringContextUsageBeanPostProcessor` (via a `BeanFactoryPostProcessor`), which records every test class
+     that uses the context, including those that reuse it from the cache. Spring's
+     `DependencyInjectionTestExecutionListener` initializes each test instance as a bean named
+     `<test class>.ORIGINAL`, and the post processor reacts to that name. It walks up the parent contexts for
+     `@ContextHierarchy` and finds their ids through the tracking bean (`getContextId`). This is deliberately not a
+     `TestExecutionListener` in `spring.factories`: Spring ignores those defaults when the root-most
+     `@TestExecutionListeners` in the test class hierarchy doesn't use `MERGE_WITH_DEFAULTS`.
    - The `ContextCustomizerImpl.equals`/`hashCode` make every instance equal. **This is required**: otherwise each test
      class would get a distinct `MergedContextConfiguration` and Spring's context cache would break.
 
