@@ -68,3 +68,8 @@ tasks.test {
     systemProperty("springTestTimelineReportDir", layout.buildDirectory.dir("timeline").get().asFile.absolutePath)
 }
 ```
+
+## Related projects
+[Spring Test Smart Context](https://github.com/seregamorph/spring-test-smart-context) orders integration test class
+execution in a suite to minimize the possible number of the active spring contexts and eagerly terminate them
+releasing system resources.
