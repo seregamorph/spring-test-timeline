@@ -65,7 +65,8 @@ Or pass it on the command line: `./mvnw verify -DspringTestTimelineReportDir=/tm
 Gradle:
 ```kotlin
 tasks.test {
-    systemProperty("springTestTimelineReportDir", layout.buildDirectory.dir("timeline").get().asFile.absolutePath)
+    systemProperty("springTestTimelineReportDir",
+        layout.buildDirectory.dir("timeline").get().asFile.absolutePath)
 }
 ```
 
