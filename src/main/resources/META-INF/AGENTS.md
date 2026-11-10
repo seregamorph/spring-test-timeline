@@ -122,7 +122,8 @@ metrics:  [ { t, active, heapUsed, heapCommitted, gc, processCpu, systemCpu,
 - `threadId` is a 0-based index of the worker thread, not a JVM thread id. `testClassName` is the class running on that
   thread when the event happened, which may differ from the class that created the context.
 - Metrics are sampled every 250 ms. `active` = live contexts, heap values in MB, CPU in percent (0-100), `gc` = a GC
-  happened around this sample. `containersCount` is `null` without Testcontainers.
+  happened around this sample. `containersCount` is `null` without Testcontainers or when the Docker env is not
+  available.
 
 Useful questions the JSON answers: how many contexts were created (`meta.contexts`) and why (compare the creators in
 `testClassNames[0]`); total startup cost (sum of `creating` + `refreshed` durations); which contexts stayed cached the

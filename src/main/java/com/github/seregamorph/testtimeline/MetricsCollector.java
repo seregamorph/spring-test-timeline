@@ -60,11 +60,13 @@ public class MetricsCollector {
         TimelineReportData.Metric firstMetric;
         LOGGER.debug("Scraping first metric");
         synchronized (metrics) {
-            firstMetric = scrapeMetrics();
+            firstMetric = scrapeMetricsSafe();
         }
         worker = new Thread(() -> {
             synchronized (metrics) {
-                metrics.add(firstMetric);
+                if (firstMetric != null) {
+                    metrics.add(firstMetric);
+                }
                 while (active) {
                     try {
                         metrics.wait(CYCLE_INTERVAL_MS);
@@ -73,11 +75,9 @@ public class MetricsCollector {
                     }
                     if (active) {
                         LOGGER.debug("Scraping {} metric", metrics.size());
-                        try {
-                            TimelineReportData.Metric metric = scrapeMetrics();
+                        TimelineReportData.Metric metric = scrapeMetricsSafe();
+                        if (metric != null) {
                             metrics.add(metric);
-                        } catch (Throwable e) {
-                            LOGGER.warn("Error while adding metric: {}", e.toString());
                         }
                     } else {
                         LOGGER.debug("Exit adding metric");
@@ -85,6 +85,16 @@ public class MetricsCollector {
                 }
             }
         });
+    }
+
+    @Nullable
+    private TimelineReportData.Metric scrapeMetricsSafe() {
+        try {
+            return scrapeMetrics();
+        } catch (Throwable e) {
+            LOGGER.warn("Error while adding metric: {}", e.toString());
+            return null;
+        }
     }
 
     private TimelineReportData.Metric scrapeMetrics() {
@@ -133,8 +143,10 @@ public class MetricsCollector {
         synchronized (metrics) {
             active = false;
             List<TimelineReportData.Metric> result = new ArrayList<>(metrics);
-            TimelineReportData.Metric lastMetric = scrapeMetrics();
-            result.add(lastMetric);
+            TimelineReportData.Metric lastMetric = scrapeMetricsSafe();
+            if (lastMetric != null) {
+                result.add(lastMetric);
+            }
 
             // shift "gc" one metric left as we register this after,
             // but visually it's more reasonable to be shown as before
@@ -145,7 +157,9 @@ public class MetricsCollector {
                 }
                 prevMetric = metric;
             }
-            lastMetric.setGc(false);
+            if (prevMetric != null) {
+                prevMetric.setGc(false);
+            }
 
             metrics.notify();
             return result;

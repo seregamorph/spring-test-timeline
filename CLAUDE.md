@@ -74,6 +74,9 @@ Three cooperating pieces, all static/thread-local state shared within one test J
 `TimelineReportData`. Each event's span runs from the previous event to this one, and a synthetic `keep_alive` segment
 is appended for contexts that were refreshed but never destroyed. `MetricsCollector` samples heap, CPU, threads, GC,
 active-context count and (optionally) the Testcontainers container count every 250 ms on a background thread.
+Metric sampling must never fail the test run: scrape failures are logged and skipped. Testcontainers counting turns
+itself off for the rest of the JVM after the first Docker `RuntimeException` (INFO log, no further Testcontainers
+calls). Its samples then have `containersCount = null`.
 
 ## HTML report
 
