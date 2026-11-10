@@ -1,6 +1,8 @@
 package com.github.seregamorph.testtimeline.testng;
 
 import com.github.seregamorph.testtimeline.EventTrackerSupport;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.testng.IExecutionListener;
 import org.testng.internal.RuntimeBehavior;
 
@@ -11,6 +13,8 @@ import org.testng.internal.RuntimeBehavior;
  */
 public class SuiteExecutionListener extends EventTrackerSupport implements IExecutionListener {
 
+    private static final Logger logger = LoggerFactory.getLogger(SuiteExecutionListener.class);
+
     @Override
     public void onExecutionStart() {
         // dryRun is only true when called via junit platform testng-engine on discovery phase, there will be subsequent
@@ -18,7 +22,7 @@ public class SuiteExecutionListener extends EventTrackerSupport implements IExec
         if (RuntimeBehavior.isDryRun()) {
             return;
         }
-        System.out.println("TimelineExecutionListener.onExecutionStart");
+        logger.debug("onExecutionStart");
         startEventTracking();
     }
 
@@ -27,7 +31,7 @@ public class SuiteExecutionListener extends EventTrackerSupport implements IExec
         if (RuntimeBehavior.isDryRun()) {
             return;
         }
-        System.out.println("TimelineExecutionListener.onExecutionFinish");
+        logger.debug("onExecutionFinish");
         finishEventTracking();
     }
 }

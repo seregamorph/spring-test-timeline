@@ -3,6 +3,8 @@ package com.github.seregamorph.testtimeline.junit;
 import com.github.seregamorph.testtimeline.EventTrackerSupport;
 import org.junit.platform.launcher.LauncherSession;
 import org.junit.platform.launcher.LauncherSessionListener;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Executed once before all tests and once after all tests of the JUnit Platform execution (all engines and all
@@ -19,15 +21,17 @@ import org.junit.platform.launcher.LauncherSessionListener;
  */
 public class SuiteSessionListener extends EventTrackerSupport implements LauncherSessionListener {
 
+    private static final Logger logger = LoggerFactory.getLogger(SuiteSessionListener.class);
+
     @Override
     public void launcherSessionOpened(LauncherSession session) {
-        System.out.println("SuiteLauncherSessionListener.launcherSessionOpened");
+        logger.debug("launcherSessionOpened");
         startEventTracking();
     }
 
     @Override
     public void launcherSessionClosed(LauncherSession session) {
-        System.out.println("SuiteLauncherSessionListener.launcherSessionClosed");
+        logger.debug("launcherSessionClosed");
         finishEventTracking();
     }
 }
