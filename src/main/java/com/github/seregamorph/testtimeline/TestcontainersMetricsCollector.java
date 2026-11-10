@@ -7,7 +7,6 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.lang.Nullable;
-import org.springframework.util.ClassUtils;
 import org.testcontainers.DockerClientFactory;
 
 public class TestcontainersMetricsCollector {
@@ -17,8 +16,18 @@ public class TestcontainersMetricsCollector {
     // set once the Docker environment turned out to be unavailable, no further Testcontainers calls after that
     private volatile boolean disabled = false;
 
+    /**
+     * Plain reflection instead of Spring's {@code ClassUtils}: this is called when the suite starts, and
+     * spring-core may be missing from the test classpath.
+     */
     public static boolean isAvailable() {
-        return ClassUtils.isPresent("org.testcontainers.DockerClientFactory", null);
+        try {
+            Class.forName("org.testcontainers.DockerClientFactory", false,
+                TestcontainersMetricsCollector.class.getClassLoader());
+            return true;
+        } catch (ClassNotFoundException | LinkageError e) {
+            return false;
+        }
     }
 
     /**

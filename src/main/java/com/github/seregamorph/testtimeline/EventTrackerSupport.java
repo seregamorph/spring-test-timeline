@@ -38,8 +38,15 @@ public abstract class EventTrackerSupport {
         if (depth.getAndIncrement() > 0) {
             return;
         }
-        timelineHelper = new TimelineHelper();
-        timelineHelper.start();
+        // the timeline is a diagnostic tool: a failure to start it should never fail the test run
+        try {
+            TimelineHelper helper = new TimelineHelper();
+            helper.start();
+            timelineHelper = helper;
+        } catch (Throwable e) {
+            timelineHelper = null;
+            logger.warn("Failed to start Spring test timeline tracking, the report will be skipped", e);
+        }
     }
 
     protected static void finishEventTracking() {
@@ -60,15 +67,15 @@ public abstract class EventTrackerSupport {
                 return;
             }
 
-            TimelineReportData report = timelineHelper.generateReport();
             // the HTML report is a diagnostic artifact: a failure to render it should never
             // fail the test run that just succeeded
             try {
+                TimelineReportData report = timelineHelper.generateReport();
                 byte[] reportData = JsonSerializers.serialize(report);
                 File htmlFile = new File(reportDir, HTML_REPORT_FILE_NAME);
                 MoreFileUtils.write(htmlFile, TimelineHtmlReport.render(reportData));
                 logger.info("Spring test timeline report: {}", htmlFile.getAbsolutePath());
-            } catch (RuntimeException e) {
+            } catch (Throwable e) {
                 logger.warn("Failed to generate {}", HTML_REPORT_FILE_NAME, e);
             }
         }
