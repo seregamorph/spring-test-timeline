@@ -9,8 +9,8 @@ import org.testng.ITestResult;
 import org.testng.internal.RuntimeBehavior;
 
 /**
- * Tracks the currently executed test class in {@link CurrentTestContextSupport}. The class-level callbacks (invoked before
- * {@code @BeforeClass} methods and after {@code @AfterClass} methods) are the primary source of the state, so
+ * Tracks the currently executed test class in {@link CurrentTestContextSupport}. The class-level callbacks (invoked
+ * before {@code @BeforeClass} methods and after {@code @AfterClass} methods) are the primary source of the state, so
  * the current test class is already known while the spring context of this class is bootstrapping.
  * <p>
  * The test method callbacks are only a fallback for the case when the class-level callbacks were invoked on
