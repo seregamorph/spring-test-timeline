@@ -8,14 +8,14 @@ Add Maven
 <dependency>
     <groupId>com.github.seregamorph</groupId>
     <artifactId>spring-test-timeline</artifactId>
-    <version>0.1</version>
+    <version>0.2</version>
     <scope>test</scope>
 </dependency>
 ```
 
 or Gradle dependency to your project:
 ```kotlin
-testRuntimeOnly("com.github.seregamorph:spring-test-timeline:0.1")
+testRuntimeOnly("com.github.seregamorph:spring-test-timeline:0.2")
 ```
 
 and then run integration tests of the project.
